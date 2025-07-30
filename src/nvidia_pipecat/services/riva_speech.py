@@ -17,6 +17,7 @@ For documentation on how to configure the Riva Speech models, please refer to th
 import asyncio
 import concurrent.futures
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import riva.client
 from loguru import logger
@@ -67,8 +68,8 @@ class RivaTTSService(TTSService):
         model: str = "fastpitch-hifigan-tts",
         custom_dictionary: dict | None = None,
         encoding: AudioEncoding = AudioEncoding.LINEAR_PCM,
-        zero_shot_audio_prompt_file: str | None = None,
-        audio_prompt_encoding: AudioEncoding = AudioEncoding.LINEAR_PCM,
+        zero_shot_audio_prompt_file: Path | None = None,
+        audio_prompt_encoding: AudioEncoding = AudioEncoding.ENCODING_UNSPECIFIED,
         use_ssl: bool = False,
         **kwargs,
     ):
@@ -180,9 +181,13 @@ class RivaTTSService(TTSService):
     @traced(attachment_strategy=AttachmentStrategy.NONE, name="tts")
     async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
         """Run text-to-speech synthesis."""
-        logger.debug(f"Generating TTS: [{text}]")
+        # Check if text contains any alphanumeric characters
+        if not any(c.isalnum() for c in text):
+            logger.debug(f"Skipping TTS for text with no alphanumeric characters: [{text}]")
+            return
+        logger.debug(f"Generating TTS: [{text.strip()}]")
         responses = self._service.synthesize_online(
-            text,
+            text.strip(),
             self._voice_id,
             self._language_code,
             sample_rate_hz=self._sample_rate,
@@ -211,9 +216,11 @@ class RivaTTSService(TTSService):
             return await asyncio.get_event_loop().run_in_executor(None, _next)
 
         response_iterator = iter(responses)
+        total_audio_length = 0
 
         while (resp := await get_next_response(response_iterator)) is not None:
             try:
+                total_audio_length += len(resp.audio)
                 await self.stop_ttfb_metrics()
                 frame = TTSAudioRawFrame(
                     audio=resp.audio,
@@ -226,6 +233,7 @@ class RivaTTSService(TTSService):
                 break
 
         await self.start_tts_usage_metrics(text)
+        logger.debug(f"Total generated TTS audio length: {total_audio_length / (self._sample_rate * 2)} seconds")
         yield TTSStoppedFrame()
 
 
@@ -260,7 +268,7 @@ class RivaASRService(STTService):
         stop_threshold: float = -1.0,
         stop_history_eou: int = 240,
         stop_threshold_eou: float = -1.0,
-        custom_configuration: str = "enable_vad_endpointing:true",
+        custom_configuration: str = "enable_vad_endpointing:true,neural_vad.onset:0.65",
         sample_rate: int = 16000,
         audio_channel_count: int = 1,
         max_alternatives: int = 1,

@@ -12,7 +12,6 @@ dependencies = [
 torch = { index = "pytorch" }
 nvidia-pipecat = { path = "../../.", editable = true }
 
-
 [[tool.uv.index]]
 name = "pytorch"
 url = "https://download.pytorch.org/whl/cpu"

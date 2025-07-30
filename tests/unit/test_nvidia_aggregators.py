@@ -8,6 +8,7 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMMessagesFrame,
+    StartInterruptionFrame,
     TextFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
@@ -67,13 +68,12 @@ async def test_normal_flow():
     )
     expected_down_frames = [
         UserStartedSpeakingFrame,
-        LLMMessagesFrame,
+        StartInterruptionFrame,
+        StartInterruptionFrame,
         OpenAILLMContextFrame,  # From first interim
-        OpenAILLMContextFrame,  # From first final
         UserStoppedSpeakingFrame,
         OpenAILLMContextFrame,
     ]
-
     await run_pipecat_test(
         pipeline,
         frames_to_send=frames_to_send,
@@ -136,8 +136,9 @@ async def test_user_speaking_frame_delay_cases():
     )
     expected_down_frames = [
         UserStartedSpeakingFrame,
+        StartInterruptionFrame,
+        StartInterruptionFrame,
         OpenAILLMContextFrame,  # from first interim after UserStartedSpeakingFrame
-        OpenAILLMContextFrame,  # From first final after UserStartedSpeakingFrame
         UserStoppedSpeakingFrame,
         OpenAILLMContextFrame,
     ]
@@ -197,9 +198,10 @@ async def test_multiple_interims_with_final_transcription():
     )
     expected_down_frames = [
         UserStartedSpeakingFrame,
-        OpenAILLMContextFrame,  # from first interim
-        OpenAILLMContextFrame,  # From second interim
-        OpenAILLMContextFrame,  # From third interim
+        StartInterruptionFrame,
+        StartInterruptionFrame,
+        StartInterruptionFrame,
+        StartInterruptionFrame,
         OpenAILLMContextFrame,  # From final transcription
         UserStoppedSpeakingFrame,
         OpenAILLMContextFrame,
@@ -259,8 +261,10 @@ async def test_transcription_after_user_stopped_speaking():
 
     expected_down_frames = [
         UserStartedSpeakingFrame,
+        StartInterruptionFrame,
         OpenAILLMContextFrame,  # From first interim
         UserStoppedSpeakingFrame,
+        StartInterruptionFrame,
         OpenAILLMContextFrame,  # From final after UserStoppedSpeakingFrame
         OpenAILLMContextFrame,  # From assistant response
     ]
@@ -316,7 +320,7 @@ async def test_no_interim_frames():
 
     expected_down_frames = [
         UserStartedSpeakingFrame,
-        LLMMessagesFrame,
+        StartInterruptionFrame,
         OpenAILLMContextFrame,  # Only from final transcription
         UserStoppedSpeakingFrame,
         OpenAILLMContextFrame,  # From assistant response

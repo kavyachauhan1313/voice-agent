@@ -72,7 +72,7 @@ class ACETransportParams(TransportParams):
         rtsp_transport: Transport protocol (tcp/udp).
         rtsp_max_delay: Buffer delay in microseconds.
         audio_in_enabled: Enable audio input.
-        camera_in_enabled: Enable camera input.
+        camera_in_enabled: Enable/Disable camera input
         audio_out_enabled: Enable audio output.
         audio_out_sample_rate: Output sample rate in Hz.
         audio_in_encoding: Input audio encoding format.
