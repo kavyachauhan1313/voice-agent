@@ -2,33 +2,61 @@
 
 In this example, we showcase how to build a simple speech-to-speech voice assistant pipeline using nvidia-pipecat along with pipecat-ai library and deploy for testing. This pipeline uses a Websocket based ACETransport, Riva ASR and TTS models and NVIDIA LLM Service. We recommend first following [the Pipecat documentation](https://docs.pipecat.ai/getting-started/core-concepts) or [the ACE Controller](https://docs.nvidia.com/ace/ace-controller-microservice/latest/user-guide.html#pipecat-overview) Pipecat overview section to understand core concepts.
 
-## Prerequisites
+## Steps to deploy speech-to-speech application
 
-1. Copy and configure the environment file:
-   ```bash
-   cp env.example .env  # and add your credentials
-   ```
+1. Clone the ace-controller repository:
+    ```bash
+    git clone https://gitlab-master.nvidia.com/ace/ace-controller.git
+    ```
 
-2. Ensure you have the required API keys:
+2. Navigate to the example directory:
+    ```bash
+    cd ace-controller/examples/speech-to-speech
+    ```
+
+3. Copy and configure the environment file:
+    ```bash
+    cp env.example .env  # and add your credentials
+    ```
+
+4. Ensure you have the required API keys:
    - NVIDIA_API_KEY - Required for accessing NIM ASR, TTS and LLM models
    - (Optional) ZEROSHOT_TTS_NVIDIA_API_KEY - Required for zero-shot TTS
 
-## Option 1: Deploy Using Docker
+   Refer to [https://build.nvidia.com/](https://build.nvidia.com/) for generating your API keys.
+
+5. Deploy the app using either of the options:
+
+### Option 1: Deploy Using Docker
 
 #### Prerequisites
 - You have access and are logged into NVIDIA NGC. For step-by-step instructions, refer to [the NGC Getting Started Guide](https://docs.nvidia.com/ngc/ngc-overview/index.html#registering-activating-ngc-account).
 
-- You have access to an NVIDIA Volta™, NVIDIA Turing™, or an NVIDIA Ampere architecture-based A100 GPU. For more information, refer to [the Support Matrix](https://docs.nvidia.com/deeplearning/riva/user-guide/docs/support-matrix.html#support-matrix).
+- You have access to an NVIDIA Turing™, NVIDIA Ampere (e.g., A100), NVIDIA Hopper (e.g., H100), NVIDIA Ada (e.g., L40S), or the latest NVIDIA GPU architectures. For more information, refer to [the Support Matrix](https://docs.nvidia.com/deeplearning/riva/user-guide/docs/support-matrix.html#support-matrix).
 
 - You have Docker installed with support for NVIDIA GPUs. For more information, refer to [the Support Matrix]((https://docs.nvidia.com/deeplearning/riva/user-guide/docs/support-matrix.html#support-matrix)).
 
-From the example/speech-to-speech directory, run below commands:
+- Before deploying with Docker, ensure your system has at least 3 available GPU devices. If you have fewer GPUs, modify the docker-compose file services to match the number of GPUs on your machine.
+
+```bash
+export NGC_API_KEY=nvapi-... # <insert your key>
+docker login nvcr.io
+```
+
+From the examples/speech-to-speech directory, run below commands:
 
 ```bash
 docker compose up -d
 ```
 
-## Option 2: Deploy using Python environment
+This will start all the required services. You should see output similar to the following:
+
+![Docker Compose Logs](./images/docker-compose-logs.png)
+
+
+Once all services are up and running, open your web browser and go to `http://WORKSTATION_IP:8100/static/index.html` to start using the application. See the next sections for detailed instructions on interacting with the app.
+
+### Option 2: Deploy using Python environment
 
 #### Prerequisites
 From the examples/speech-to-speech directory, run the following commands to create a virtual environment and install the dependencies:
@@ -44,8 +72,6 @@ uv sync
 
 Make sure you've configured the `.env` file with your API keys before proceeding.
 
-After making all required changes/customizations in bot.py, you can deploy the pipeline using below command:
-
 ```bash
 python bot.py
 ```
@@ -53,6 +79,8 @@ python bot.py
 ## Start interacting with the application
 
 This will host the static web client along with the ACE controller server, visit `http://WORKSTATION_IP:8100/static/index.html` in your browser to start a session.
+
+![UI Screenshot](./images/ui.png)
 
 Note: For mic access, you will need to update chrome://flags/ and add http://WORKSTATION_IP:8100 in Insecure origins treated as secure section.
 

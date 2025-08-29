@@ -1,0 +1,136 @@
+name: voice-agents-webrtc
+
+services:
+  riva-tts-magpie:
+    image: nvcr.io/nim/nvidia/magpie-tts-multilingual:latest
+    user: "0:0"
+    env_file: 
+      - path: ./.env
+        required: true
+    environment:
+      - NIM_HTTP_API_PORT=9000
+      - NIM_GRPC_API_PORT=50051
+    ports:
+      - "19000:9000"
+      - "50151:50051"
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/grpc_health_probe -addr=:50051 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 150s
+    volumes:
+      - nim_cache:/opt/nim/.cache
+      - riva_data:/data
+    shm_size: 16GB
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  riva-asr-parakeet:
+    image: nvcr.io/nim/nvidia/parakeet-1-1b-ctc-en-us:latest
+    user: "0:0"
+    env_file:
+      - path: ./.env
+        required: true
+    environment:
+      - NIM_HTTP_API_PORT=9001
+      - NIM_GRPC_API_PORT=50052
+      - NIM_TAGS_SELECTOR=mode=str,vad=silero
+    ports:
+      - "19001:9001"
+      - "50152:50052"
+    volumes:
+      - nim_cache:/opt/nim/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/bin/grpc_health_probe -addr=:50052 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  python-app:
+    build:
+      context: ../../
+      dockerfile: examples/healthcare_voice_agent/Dockerfile
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./audio_dumps:/app/examples/healthcare_voice_agent/audio_dumps
+    env_file:
+      - path: ./.env
+        required: true
+    depends_on:
+      riva-tts-magpie:
+        condition: service_healthy
+      riva-asr-parakeet:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:7860/get_prompt || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  ui-app:
+    build:
+      context: ../webrtc_ui
+      dockerfile: ../webrtc_ui/Dockerfile
+    ports:
+      - "9000:8000"
+    depends_on:
+      python-app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  patient-intake-server:
+    container_name: patient-intake-healthcare-assistant
+    image: patient-intake-healthcare-assistant:${TAG:-latest}
+    env_file:
+    - path: ./.env
+      required: true
+    build:
+      context: ./agentic-healthcare-front-desk
+      dockerfile: Dockerfile
+    entrypoint: python3 chain_server/chain_server.py --assistant intake --port 8081
+    ports:
+    - "8081:8081"
+    expose:
+    - "8081"
+    volumes:
+      - ./graph_definitions/graph_images:/graph_images
+    shm_size: 5gb
+
+
+volumes:
+  nim_cache:
+  riva_data:

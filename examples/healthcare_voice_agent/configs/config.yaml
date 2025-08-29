@@ -1,0 +1,44 @@
+Pipeline:
+    # Only one of the following LLM service configurations will be active based on this setting:
+    # - "NvidiaLLMService" - Uses the NvidiaLLMService configuration
+    # - "NvidiaRAGService" - Uses the NvidiaRAGService configuration
+    # - "OpenAILLMService" - Uses the OpenAILLMService configuration
+    llm_processor: "NvidiaRAGService" # OR NvidiaLLMService OR NvidiaRAGService OR OpenAILLMService
+    filler:
+        - "Hold on a moment"
+    time_delay: 3.0
+
+## System Prompt is set by the agent backend, setting to "let's start over" trigger the agent backend.
+OpenAILLMContext:
+    name: "Assistant"
+    prompt: "let's start over"
+
+# This configuration is only used when llm_processor is set to "NvidiaRAGService"
+NvidiaRAGService:
+    use_knowledge_base: false
+    max_tokens: 1024
+    rag_server_url: "http://patient-intake-server:8081"
+    collection_name: "collection_name"
+    suffix_prompt: ""
+
+RivaASRService:
+    server: "riva-asr-parakeet:50052"
+    language: "en-US"
+    sample_rate: 16000
+    model: "parakeet-1.1b-en-US-asr-streaming-silero-vad-asr-bls-ensemble"
+
+RivaTTSService:
+    server: "riva-tts-magpie:50051"
+    language: "en-US"
+    voice_id: "Magpie-Multilingual.EN-US.Mia"
+    model: "magpie_tts_ensemble-Magpie-Multilingual"
+
+
+# This configuration is only used when llm_processor is set to "NvidiaLLMService"
+NvidiaLLMService:
+    model: "meta/llama-3.1-8b-instruct"
+
+# This configuration is only used when llm_processor is set to "OpenAILLMService"
+OpenAILLMService:
+    model: "gpt-4o"
+

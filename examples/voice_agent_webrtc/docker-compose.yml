@@ -89,7 +89,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ['2','3']
+              device_ids: ['2']
               capabilities: [gpu]
     logging:
       driver: "json-file"
@@ -144,8 +144,8 @@ services:
 
   ui-app:
     build:
-      context: .
-      dockerfile: ui/Dockerfile
+      context: ../webrtc_ui
+      dockerfile: ../webrtc_ui/Dockerfile
     ports:
       - "9000:8000"
     depends_on:

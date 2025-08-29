@@ -2,39 +2,106 @@
 
 In this example, we showcase how to build a speech-to-speech voice assistant pipeline using WebRTC with real-time transcripts. It uses Pipecat pipeline with FastAPI on the backend, and React on the frontend. This pipeline uses a WebRTC based SmallWebRTCTransport, Riva ASR and TTS models and NVIDIA LLM Service.
 
-## Prerequisites
-- You have access and are logged into NVIDIA NGC. For step-by-step instructions, refer to [the NGC Getting Started Guide](https://docs.nvidia.com/ngc/ngc-overview/index.html#registering-activating-ngc-account).
+## Steps to deploy voice_agent_webrtc application
 
-- You have Docker installed with support for NVIDIA GPUs. For more information, refer to [the Support Matrix](https://docs.nvidia.com/deeplearning/riva/user-guide/docs/support-matrix.html#support-matrix).
+1. Clone the ace-controller repository:
 
-## Setup API keys
+   ```bash
+   git clone https://gitlab-master.nvidia.com/ace/ace-controller.git
+   ```
 
-1. Copy and configure the environment file:
+2. Navigate to the example directory:
+
+   ```bash
+   cd ace-controller/examples/voice_agent_webrtc
+   ```
+
+3. Copy and configure the environment file:
 
    ```bash
    cp env.example .env  # and add your credentials
    ```
 
-2. Ensure you have the required API keys:
+4. Ensure you have the required API keys:
    - NVIDIA_API_KEY - Required for accessing NIM ASR, TTS and LLM models
    - (Optional) ZEROSHOT_TTS_NVIDIA_API_KEY - Required for zero-shot TTS
 
+   Refer to [https://build.nvidia.com/](https://build.nvidia.com/) for generating your API keys.
 
-## Option 1: Deploy Using Docker
+5. Set up Coturn Server:
 
-From the example/voice_agent_webrtc directory, run:
+   For both Docker and Python deployments, you need to set up a coturn server for WebRTC connectivity.
+
+   Update HOST_IP_EXTERNAL and run the below command:
+
+   ```bash
+   docker run -d --network=host instrumentisto/coturn -n --verbose --log-file=stdout --external-ip=<HOST_IP_EXTERNAL>  --listening-ip=<HOST_IP_EXTERNAL>  --lt-cred-mech --fingerprint --user=admin:admin --no-multicast-peers --realm=tokkio.realm.org --min-port=51000 --max-port=52000
+   ```
+
+   **Update pipeline.py:**
+
+   Add the following configuration to your `pipeline.py` file to use the coturn server:
+
+   ```python
+   ice_servers = [
+       IceServer(
+           urls="<TURN_SERVER_URL>",
+           username="<TURN_USERNAME>",
+           credential="<TURN_PASSWORD>"
+       )
+   ]
+   ```
+
+   **Update webrtc_ui/src/config.ts:**
+
+   Add the following configuration to your [`../webrtc_ui/src/config.ts`](../webrtc_ui/src/config.ts) file to use the coturn server:
+
+   ```typescript
+   export const RTC_CONFIG: ConstructorParameters<typeof RTCPeerConnection>[0] = {
+       iceServers: [
+         {
+           urls: "<turn_server_url>",
+           username: "<turn_server_username>",
+           credential: "<turn_server_credential>",
+         },
+       ],
+     };
+   ```
+
+6. Deploy the app using either of the options:
+
+### Option 1: Deploy Using Docker
+
+#### Prerequisites
+
+- You have access and are logged into NVIDIA NGC. For step-by-step instructions, refer to [the NGC Getting Started Guide](https://docs.nvidia.com/ngc/ngc-overview/index.html#registering-activating-ngc-account).
+
+- You have access to an NVIDIA Turing™, NVIDIA Ampere (e.g., A100), NVIDIA Hopper (e.g., H100), NVIDIA Ada (e.g., L40S), or the latest NVIDIA GPU architectures. For more information, refer to [the Support Matrix](https://docs.nvidia.com/deeplearning/riva/user-guide/docs/support-matrix.html#support-matrix).
+
+- You have Docker installed with support for NVIDIA GPUs. For more information, refer to [the Support Matrix]((https://docs.nvidia.com/deeplearning/riva/user-guide/docs/support-matrix.html#support-matrix)).
+
+- Before deploying with Docker, ensure your system has at least 3 available GPU devices. If you have fewer GPUs, modify the docker-compose file services to match the number of GPUs on your machine.
+
+```bash
+export NGC_API_KEY=nvapi-... # <insert your key>
+docker login nvcr.io
+```
+
+From the examples/voice_agent_webrtc directory, run below commands:
 
 ```bash
 docker compose up --build -d
 ```
 
-Then visit `http://<machine-ip>:9000/` in your browser to start interacting with the application.
+This will start all the required services. You should see output similar to the following:
 
-Note: To enable microphone access in Chrome, go to `chrome://flags/`, enable "Insecure origins treated as secure", add `http://<machine-ip>:9000` to the list, and restart Chrome.
+![Docker Compose Logs](./images/docker-compose-logs.png)
 
-## Option 2: Deploy Using Python Environment
+Once all services are up and running, visit `http://<machine-ip>:9000/` in your browser to start interacting with the application. See the next sections for detailed instructions on interacting with the app.
 
-### Requirements
+### Option 2: Deploy Using Python Environment
+
+#### Requirements
 
 - Python (>=3.12)
 - [uv](https://github.com/astral-sh/uv)
@@ -47,49 +114,15 @@ All Python dependencies are listed in `pyproject.toml` and can be installed with
 uv run pipeline.py
 ```
 
-Then run the ui from [`ui/README.md`](ui/README.md).
+Then run the UI from [`../webrtc_ui/README.md`](../webrtc_ui/README.md).
 
-## Using Coturn Server
+## Start interacting with the application
 
-If you want to share widely or want to deploy on cloud platforms, you will need to setup coturn server. Follow instructions below for modifications required in example code for using coturn:
+Once all services are up and running, visit `http://<machine-ip>:9000/` in your browser to start interacting with the application. See the next sections for detailed instructions on interacting with the app.
 
-### Deploy Coturn Server
+![UI Screenshot](./images/ui_webrtc.png)
 
-Update HOST_IP_EXTERNAL and run the below command:
-
-```bash
-docker run -d --network=host instrumentisto/coturn -n --verbose --log-file=stdout --external-ip=<HOST_IP_EXTERNAL>  --listening-ip=<HOST_IP_EXTERNAL>  --lt-cred-mech --fingerprint --user=admin:admin --no-multicast-peers --realm=tokkio.realm.org --min-port=51000 --max-port=52000
-```
-
-#### Update pipeline.py
-
-Add the following configuration to your `pipeline.py` file to use the coturn server:
-
-```python
-ice_servers = [
-    IceServer(
-        urls="<TURN_SERVER_URL>",
-        username="<TURN_USERNAME>",
-        credential="<TURN_PASSWORD>"
-    )
-]
-```
-
-#### Update ui/src/config.ts
-
-Add the following configuration to your `ui/src/config.ts` file to use the coturn server:
-
-```typescript
-export const RTC_CONFIG: ConstructorParameters<typeof RTCPeerConnection>[0] = {
-    iceServers: [
-      {
-        urls: "<turn_server_url>",
-        username: "<turn_server_username>",
-        credential: "<turn_server_credential>",
-      },
-    ],
-  };
-```
+Note: To enable microphone access in Chrome, go to `chrome://flags/`, enable "Insecure origins treated as secure", add `http://<machine-ip>:9000` to the list, and restart Chrome.
 
 ## Bot customizations
 

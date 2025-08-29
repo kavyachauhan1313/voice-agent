@@ -24,3 +24,13 @@ A real-time speech-to-speech voice assistant pipeline using WebRTC with live tra
 - Docker and Python deployment options
 
 Follow the instructions from [the example directory](./voice_agent_webrtc/README.md) for more details.
+
+### Healthcare Voice Agent
+An agentic patient front desk assistant built upon the WebRTC Voice Agent foundation. This example demonstrates:
+- Agentic AI capabilities for intelligent patient intake and front desk operations
+- Built on the robust [WebRTC Voice Agent example](./voice_agent_webrtc/README.md) architecture
+- Riva ASR and TTS models with speculative speech processing
+- Comprehensive patient information collection and management workflows
+- Intelligent appointment scheduling and coordination features
+
+Follow the instructions from [the example directory](./healthcare_voice_agent/README.md) for more details.
