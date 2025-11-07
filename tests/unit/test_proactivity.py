@@ -64,22 +64,19 @@ async def test_proactive_bot_processor_timer_behavior():
         # Wait for initial proactive message
         await asyncio.sleep(0.6)
 
-        # Confirm at least one frame
-        assert len(storage.history) >= 1, "Expected at least one frame."
-
-        # Confirm correct text frame output
-        frame = storage.history[2].frame
-        assert isinstance(frame, TTSSpeakFrame)
-        assert frame.text == "I'm here if you need me!"
+        # Confirm at least one TTSSpeakFrame was emitted with correct text
+        speak_frames = [h.frame for h in storage.history if isinstance(h.frame, TTSSpeakFrame)]
+        assert len(speak_frames) >= 1, "Expected at least one TTSSpeakFrame."
+        assert speak_frames[-1].text == "I'm here if you need me!"
 
         # Send another StartFrame to reset the timer
         await task.queue_frame(UserStoppedSpeakingFrame())
-        await asyncio.sleep(0)
-
-        # Wait half the timer (0.5s) => no new message yet
-        frame_count_after_reset = len(storage.history)
+        # Give a brief moment for the stop frame to be recorded
+        await asyncio.sleep(0.05)
+        # Wait half the timer (0.5s) => no new proactive message yet
+        speak_count_after_reset = len([h for h in storage.history if isinstance(h.frame, TTSSpeakFrame)])
         await asyncio.sleep(0.3)
-        # Confirm no additional message arrived yet
-        assert frame_count_after_reset == len(storage.history)
+        # Confirm no additional TTSSpeakFrame arrived yet
+        assert speak_count_after_reset == len([h for h in storage.history if isinstance(h.frame, TTSSpeakFrame)])
 
     await run_interactive_test(pipeline, test_coroutine=test_routine)

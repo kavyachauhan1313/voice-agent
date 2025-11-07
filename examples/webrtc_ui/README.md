@@ -1,6 +1,6 @@
 # Speech to Speech UI
 
-This is a UI for ACE's speech-to-speech pipeline using WebRTC.
+This is a UI for Voice Agent pipeline using Pipecat with WebRTC transport.
 
 ## Requirements
 
@@ -9,9 +9,7 @@ This is a UI for ACE's speech-to-speech pipeline using WebRTC.
 
 All frontend dependencies are listed in `ui/package.json`.
 
-## Configuration
-
-### Using Turn Server
+## Using Turn Server
 
 A TURN server is needed for WebRTC connections when clients are behind NATs or firewalls that prevent direct peer-to-peer communication. The TURN server acts as a relay to ensure connectivity in restrictive network environments.
 
@@ -32,28 +30,6 @@ export const RTC_CONFIG: ConstructorParameters<typeof RTCPeerConnection>[0] = {
 
 3. Save the file and restart the development server
 
-
-### Dynamic Prompt
-
-- **Default mode** (`DYNAMIC_PROMPT = false`): Uses preset prompts from the backend API
-- **Dynamic mode** (`DYNAMIC_PROMPT = true`): Allows users to input and send custom prompts via the UI
-
-To enable dynamic prompt ingestion from the UI:
-
-1. Open `src/config.ts`
-2. Set `DYNAMIC_PROMPT` to `true`:
-
-```typescript
-// Set to true to use dynamic prompt mode, false for default mode
-export const DYNAMIC_PROMPT = true;
-```
-
-3. Save the file and restart the development server
-
-When dynamic mode is enabled:
-- Users can input custom prompts directly in the UI
-- A "Show Prompt"/"Hide Prompt" toggle button is available
-- Prompts are sent to the backend for processing when the WebRTC connection is established
 
 ## Run locally
 
@@ -100,3 +76,15 @@ Below are a few options to work around this limitation:
   Examples:
   - [Ubuntu, Apache2 and Let's Encrypt](https://www.digitalocean.com/community/tutorials/how-to-secure-apache-with-let-s-encrypt-on-ubuntu-20-04)
   - [Ubuntu, nginx and Let's Encrypt](https://www.digitalocean.com/community/tutorials/how-to-secure-nginx-with-let-s-encrypt-on-ubuntu-20-04)
+
+
+## Interacting with the UI
+
+- **[Optional]** Click the `Configure` button to:
+  - Edit the system prompt (if supported by the backend)
+  - Upload custom voice prompts (if using a zero-shot TTS model)
+  - Select a TTS voice
+
+- Click the `Start` button to begin interacting.
+
+> **Note:** You can change the TTS voice in real time during an active session. However, the system prompt and zero-shot audio prompts cannot be edited or uploaded while a session is active.

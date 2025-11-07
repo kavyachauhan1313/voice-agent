@@ -22,7 +22,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.tests.utils import QueuedFrameProcessor
+from pipecat.tests.utils import QueuedFrameProcessor, SleepFrame
 from pipecat.tests.utils import run_test as run_pipecat_test
 
 from nvidia_pipecat.frames.action import ActionFrame
@@ -86,6 +86,14 @@ def ignore_ids(frame: Frame) -> Frame:
     new_frame = copy(frame)
     new_frame.id = ANY
     new_frame.name = ANY
+    # Volatile attributes that vary by runtime context and should not
+    # participate in equality assertions within tests
+    if hasattr(new_frame, "processor"):
+        new_frame.processor = ANY
+    if hasattr(new_frame, "transport_source"):
+        new_frame.transport_source = ANY
+    if hasattr(new_frame, "transport_destination"):
+        new_frame.transport_destination = ANY
     if isinstance(frame, ActionFrame):
         new_frame.action_id = ANY
     return new_frame
@@ -321,17 +329,36 @@ async def run_test(
     Raises:
         AssertionError: If received frames don't match expected frames.
     """
-    if start_metadata is None:
-        start_metadata = {}
-    received_down_frames, received_up_frames = await run_pipecat_test(
-        processor,
-        frames_to_send=frames_to_send,
-        expected_down_frames=[f.__class__ for f in expected_down_frames],
-        expected_up_frames=[f.__class__ for f in expected_up_frames],
-        ignore_start=ignore_start,
-        start_metadata=start_metadata,
-        send_end_frame=send_end_frame,
-    )
+    # If start_metadata is provided, use the interactive runner so we can set PipelineParams(start_metadata=...)
+    if start_metadata:
+
+        async def scenario(task: PipelineTask):
+            for f in frames_to_send:
+                # Emulate timing semantics of SleepFrame instead of pushing it downstream
+                if isinstance(f, SleepFrame):
+                    await asyncio.sleep(getattr(f, "sleep", 0))
+                else:
+                    await task.queue_frame(f)
+
+        received_down_frames, received_up_frames = await run_interactive_test(
+            processor,
+            test_coroutine=scenario,
+            start_metadata=start_metadata,
+            ignore_start=ignore_start,
+            send_end_frame=send_end_frame,
+        )
+    else:
+        received_down_frames, received_up_frames = await run_pipecat_test(
+            processor,
+            frames_to_send=frames_to_send,
+            expected_down_frames=[f.__class__ for f in expected_down_frames],
+            expected_up_frames=[f.__class__ for f in expected_up_frames],
+            ignore_start=ignore_start,
+            send_end_frame=send_end_frame,
+        )
+
+    # Filter out control/sleep frames to mirror upstream test helper behavior
+    received_down_frames = [f for f in received_down_frames if not isinstance(f, SleepFrame)]
 
     for real, expected in zip(received_up_frames, expected_up_frames, strict=True):
         assert real == expected, f"Frame mismatch: \nreal: {repr(real)} \nexpected: {repr(expected)}"
@@ -383,7 +410,7 @@ async def run_interactive_test(
 
     pipeline = Pipeline([source, processor, sink])
 
-    task = PipelineTask(pipeline, params=PipelineParams(start_metadata=start_metadata))
+    task = PipelineTask(pipeline, params=PipelineParams(start_metadata=start_metadata, allow_interruptions=False))
 
     async def run_test():
         # Just give a little head start to the runner.
@@ -413,8 +440,6 @@ async def run_interactive_test(
         if not isinstance(frame, EndFrame) or not send_end_frame:
             received_down_frames.append(frame)
 
-    print("received DOWN frames =", received_down_frames)
-
     #
     # Up frames
     #
@@ -422,7 +447,5 @@ async def run_interactive_test(
     while not received_up.empty():
         frame = await received_up.get()
         received_up_frames.append(frame)
-
-    print("received UP frames =", received_up_frames)
 
     return (received_down_frames, received_up_frames)

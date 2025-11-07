@@ -26,9 +26,8 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
+    InterruptionFrame,
     StartFrame,
-    StartInterruptionFrame,
-    StopInterruptionFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
@@ -37,17 +36,22 @@ from pipecat.frames.frames import (
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.stt_service import STTService
 from pipecat.services.tts_service import TTSService
 from pipecat.transcriptions.language import Language
+from pipecat.utils.text.base_text_aggregator import BaseTextAggregator
 from pipecat.utils.time import time_now_iso8601
 from riva.client.proto.riva_audio_pb2 import AudioEncoding
 
-from nvidia_pipecat.frames.riva import RivaInterimTranscriptionFrame
-from nvidia_pipecat.utils.tracing import AttachmentStrategy, traceable, traced
+from nvidia_pipecat.frames.riva import (
+    RivaFetchVoicesFrame,
+    RivaInterimTranscriptionFrame,
+    RivaTTSUpdateSettingsFrame,
+    RivaVoicesFrame,
+)
 
 
-@traceable
 class RivaTTSService(TTSService):
     """NVIDIA Riva Text-to-Speech service implementation.
 
@@ -60,17 +64,18 @@ class RivaTTSService(TTSService):
         *,
         api_key: str | None = None,
         server: str = "grpc.nvcf.nvidia.com:443",
-        voice_id: str = "English-US.Female-1",
+        voice_id: str = "Magpie-Multilingual.EN-US.Aria",
         sample_rate: int = 16000,
-        function_id: str = "0149dedb-2be8-4195-b9a0-e57e0e14f972",
+        function_id: str = "877104f7-e885-42b9-8de8-f6e4c6303969",
         language: Language | None = Language.EN_US,
         zero_shot_quality: int | None = 20,
-        model: str = "fastpitch-hifigan-tts",
+        model: str = "magpie_tts_ensemble-Magpie-Multilingual",
         custom_dictionary: dict | None = None,
         encoding: AudioEncoding = AudioEncoding.LINEAR_PCM,
         zero_shot_audio_prompt_file: Path | None = None,
         audio_prompt_encoding: AudioEncoding = AudioEncoding.ENCODING_UNSPECIFIED,
         use_ssl: bool = False,
+        text_aggregator: BaseTextAggregator | None = None,
         **kwargs,
     ):
         """Initializes the Riva TTS service.
@@ -91,6 +96,8 @@ class RivaTTSService(TTSService):
             audio_prompt_encoding (AudioEncoding, optional): Encoding of audio prompt.
                 Defaults to AudioEncoding.LINEAR_PCM.
             use_ssl (bool, optional): Whether to use SSL for connection. Defaults to False.
+            text_aggregator (BaseTextAggregator | None, optional): Text aggregator for sentence detection.
+                Defaults to None, which uses SimpleTextAggregator.
             **kwargs: Additional keyword arguments passed to parent class.
 
         Raises:
@@ -106,6 +113,7 @@ class RivaTTSService(TTSService):
             sample_rate=sample_rate,
             push_text_frames=False,
             push_stop_frames=True,
+            text_aggregator=text_aggregator,
             **kwargs,
         )
         self._api_key = api_key
@@ -119,7 +127,9 @@ class RivaTTSService(TTSService):
         self._custom_dictionary = custom_dictionary
         self._encoding = encoding
         self._zero_shot_audio_prompt_file = zero_shot_audio_prompt_file
+        self._backend_audio_prompt_file = zero_shot_audio_prompt_file
         self._audio_prompt_encoding = audio_prompt_encoding
+        self._model = model
 
         metadata = [
             ["function-id", function_id],
@@ -153,6 +163,68 @@ class RivaTTSService(TTSService):
         """
         return True
 
+    def is_zeroshot_model(self) -> bool:
+        """Check if the current model supports zero-shot voice cloning.
+
+        Returns:
+            bool: True if the model is a zero-shot model (contains 'ZeroShot' or 'zeroshot').
+        """
+        return "zeroshot" in self._model.lower() if self._model else False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        """Handle TTS control frames and delegate standard behavior.
+
+        - RivaFetchVoicesFrame: Query Riva for available voices and emit a single
+          RivaVoicesFrame containing all voice information (available voices,
+          current selection, and custom audio prompt status).
+        - RivaTTSUpdateSettingsFrame: Update voice settings (default or custom voice).
+        - Any other frame: Delegate to the base TTSService implementation.
+        """
+        # Respond to RivaFetchVoicesFrame from the pipeline/UI
+        if isinstance(frame, RivaFetchVoicesFrame):
+            try:
+                # Send consolidated voice information in a single frame
+                zero_shot_prompt = self._zero_shot_audio_prompt_file.name if self._zero_shot_audio_prompt_file else ""
+                await self.push_frame(
+                    RivaVoicesFrame(
+                        available_voices=self.list_available_voices(),
+                        current_voice_id=getattr(self, "_voice_id", ""),
+                        is_zeroshot_model=self.is_zeroshot_model(),
+                        zero_shot_prompt=zero_shot_prompt,
+                    ),
+                    direction,
+                )
+            except Exception as e:
+                logger.warning(f"{self} Unable to fetch voice information: {e}")
+            return
+
+        # Handle voice settings update
+        if isinstance(frame, RivaTTSUpdateSettingsFrame):
+            if frame.voice_type == "default":
+                # Default voice: clear custom prompt and set voice_id
+                self._zero_shot_audio_prompt_file = None
+                if frame.identifier:
+                    self.set_voice(frame.identifier)
+                    logger.debug(f"Switched to default voice: {frame.identifier}")
+            elif frame.voice_type == "custom":
+                # Custom voice: use path from frame or fallback to backend
+                prompt_id = frame.identifier
+
+                if frame.custom_prompt_path and frame.custom_prompt_path.exists():
+                    # Path provided directly in frame
+                    prompt_path = frame.custom_prompt_path
+                    self._zero_shot_audio_prompt_file = prompt_path
+                    logger.debug(f"Switched to custom prompt: {prompt_id} -> {prompt_path}")
+                elif prompt_id == "backend":
+                    # Use initial backend-configured prompt
+                    self._zero_shot_audio_prompt_file = self._backend_audio_prompt_file
+                    logger.debug("Switched to backend prompt")
+                else:
+                    logger.warning(f"Custom prompt path not provided or invalid for: {prompt_id}")
+            return
+
+        await super().process_frame(frame, direction)
+
     async def _push_tts_frames(self, text: str):
         """Override base class method to push text frames immediately."""
         # Remove leading newlines only
@@ -178,7 +250,6 @@ class RivaTTSService(TTSService):
             await self.process_generator(self.run_tts(text))
         await self.stop_processing_metrics()
 
-    @traced(attachment_strategy=AttachmentStrategy.NONE, name="tts")
     async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
         """Run text-to-speech synthesis."""
         # Check if text contains any alphanumeric characters
@@ -186,17 +257,53 @@ class RivaTTSService(TTSService):
             logger.debug(f"Skipping TTS for text with no alphanumeric characters: [{text}]")
             return
         logger.debug(f"Generating TTS: [{text.strip()}]")
-        responses = self._service.synthesize_online(
-            text.strip(),
-            self._voice_id,
-            self._language_code,
-            sample_rate_hz=self._sample_rate,
-            zero_shot_audio_prompt_file=self._zero_shot_audio_prompt_file,
-            audio_prompt_encoding=self._audio_prompt_encoding,
-            zero_shot_quality=self._zero_shot_quality,
-            custom_dictionary=self._custom_dictionary,
-            encoding=self._encoding,
-        )
+
+        # Split text into <=200-character chunks at whitespace where possible
+        def _split_text_into_chunks(s: str, max_len: int) -> list[str]:
+            """Split into <= max_len chunks, preferring whitespace boundaries.
+
+            Guarantees:
+            - No empty chunks
+            - No leading/trailing whitespace on chunks
+            - Preserves words when possible (splits mid-word only if needed)
+            """
+            input_text = s.strip()
+            if not input_text:
+                return []
+            if len(input_text) <= max_len:
+                return [input_text]
+
+            chunks: list[str] = []
+            input_length = len(input_text)
+            current_index = 0
+
+            while current_index < input_length:
+                window_end_index = min(current_index + max_len, input_length)
+                if window_end_index < input_length:
+                    # Work within a bounded window [current_index, window_end_index)
+                    window_text = input_text[current_index:window_end_index]
+                    last_whitespace_offset = next(
+                        (k for k in range(len(window_text) - 1, -1, -1) if window_text[k].isspace()),
+                        -1,
+                    )
+                    if last_whitespace_offset > 0:
+                        chunk = window_text[:last_whitespace_offset].rstrip()
+                        current_index += last_whitespace_offset
+                        while current_index < input_length and input_text[current_index].isspace():
+                            current_index += 1
+                    else:
+                        chunk = window_text
+                        current_index = window_end_index
+                else:
+                    chunk = input_text[current_index:window_end_index]
+                    current_index = window_end_index
+
+                if chunk:
+                    chunks.append(chunk)
+
+            return chunks
+
+        chunks = _split_text_into_chunks(text, 200)
 
         await self.start_ttfb_metrics()
         yield TTSStartedFrame()
@@ -215,29 +322,101 @@ class RivaTTSService(TTSService):
 
             return await asyncio.get_event_loop().run_in_executor(None, _next)
 
-        response_iterator = iter(responses)
         total_audio_length = 0
-
-        while (resp := await get_next_response(response_iterator)) is not None:
+        # Synthesize audio for each 200-char chunk sequentially
+        for chunk in chunks:
             try:
-                total_audio_length += len(resp.audio)
-                await self.stop_ttfb_metrics()
-                frame = TTSAudioRawFrame(
-                    audio=resp.audio,
-                    sample_rate=self._sample_rate,
-                    num_channels=1,
+                responses = self._service.synthesize_online(
+                    chunk.strip(),
+                    self._voice_id,
+                    self._language_code,
+                    sample_rate_hz=self._sample_rate,
+                    zero_shot_audio_prompt_file=self._zero_shot_audio_prompt_file,
+                    audio_prompt_encoding=self._audio_prompt_encoding,
+                    zero_shot_quality=self._zero_shot_quality,
+                    custom_dictionary=self._custom_dictionary,
+                    encoding=self._encoding,
                 )
-                yield frame
+
+                response_iterator = iter(responses)
+
+                while (resp := await get_next_response(response_iterator)) is not None:
+                    try:
+                        total_audio_length += len(resp.audio)
+                        await self.stop_ttfb_metrics()
+                        frame = TTSAudioRawFrame(
+                            audio=resp.audio,
+                            sample_rate=self._sample_rate,
+                            num_channels=1,
+                        )
+                        yield frame
+                    except Exception as e:
+                        logger.error(f"{self} Error processing TTS response: {e}")
+                        break
             except Exception as e:
-                logger.error(f"{self} Error processing TTS response: {e}")
+                logger.error(f"{self} Error invoking TTS: {e}")
                 break
 
         await self.start_tts_usage_metrics(text)
         logger.debug(f"Total generated TTS audio length: {total_audio_length / (self._sample_rate * 2)} seconds")
         yield TTSStoppedFrame()
 
+    def list_available_voices(self) -> dict[str, dict[str, list[str]]]:
+        """Return voices grouped by language; filter by configured language token if set."""
+        try:
+            resp = self._service.stub.GetRivaSynthesisConfig(
+                riva.client.proto.riva_tts_pb2.RivaSynthesisConfigRequest()
+            )
 
-@traceable
+            # Extract language token for filtering (e.g., "en-us" from "en-US")
+            token = None
+            if self._language_code:
+                token = str(self._language_code).replace("_", "-").split(",")[0].strip().lower()
+
+            # Collect all voices from model configs
+            all_voices = []
+            for cfg in resp.model_config:
+                params = cfg.parameters
+                lang_code = params.get("language_code")
+                voice_name = params.get("voice_name")
+
+                if not lang_code or not voice_name:
+                    continue
+
+                # Generate voice names from base voice and subvoices
+                subvoices = params.get("subvoices", "")
+                if subvoices:
+                    names = [f"{voice_name}.{sub.split(':')[0]}" for sub in subvoices.split(",") if sub]
+                else:
+                    names = [voice_name]
+
+                all_voices.append((lang_code, names))
+
+            # Detect if this is a multilingual model by checking if any voice contains the language token
+            is_multilingual = token and any(token in name.lower() for _, names in all_voices for name in names)
+
+            # Build result: filter by language for multilingual models, return all voices otherwise
+            result: dict[str, dict[str, list[str]]] = {}
+            for lang_code, names in all_voices:
+                if is_multilingual:
+                    # Filter voices by language token for multilingual models
+                    names = [n for n in names if token in n.lower()]
+                    if not names:
+                        continue
+                    key = token.upper()
+                else:
+                    # Return all voices for non-multilingual models
+                    key = lang_code
+
+                result.setdefault(key, {"voices": []})["voices"].extend(names)
+
+            return dict(sorted(result.items()))
+
+        except Exception as e:
+            logger.error(f"{self} Failed to list available voices: {e}")
+            raise
+
+
 class RivaASRService(STTService):
     """NVIDIA Riva Automatic Speech Recognition service.
 
@@ -393,6 +572,8 @@ class RivaASRService(STTService):
         # Initialize the thread task and response task
         self._thread_task = None
         self._response_task = None
+        # Initialize ASR compute latency tracking
+        self._audio_duration_counter = 0.0  # Tracks cumulative audio duration sent to Riva (in seconds)
 
     def can_generate_metrics(self) -> bool:
         """Check if the service can generate metrics.
@@ -452,9 +633,10 @@ class RivaASRService(STTService):
             raise
         logger.debug("Riva ASR streaming request terminated.")
 
-    @traced(attachment_strategy=AttachmentStrategy.NONE, name="asr")
     async def _thread_task_handler(self):
         try:
+            # Reset audio duration counter for new ASR session
+            self._audio_duration_counter = 0.0
             self._thread_running = True
             await asyncio.to_thread(self._response_handler)
         except asyncio.CancelledError:
@@ -470,11 +652,10 @@ class RivaASRService(STTService):
                 # Push an out-of-band frame (i.e. not using the ordered push
                 # frame task) to stop everything, specially at the output
                 # transport.
-                await self.push_frame(StartInterruptionFrame())
+                await self.push_frame(InterruptionFrame())
             elif isinstance(frame, UserStoppedSpeakingFrame):
                 logger.debug("User stopped speaking")
                 await self._stop_interruption()
-                await self.push_frame(StopInterruptionFrame())
 
         await self.push_frame(frame)
 
@@ -502,6 +683,10 @@ class RivaASRService(STTService):
                     if self._generate_interruptions:
                         self._vad_state = VADState.QUIET
                         await self._handle_interruptions(UserStoppedSpeakingFrame())
+                    # Calculate ASR compute latency
+                    if result.audio_processed:
+                        compute_latency = self._audio_duration_counter - result.audio_processed
+                        logger.debug(f"{self.name} ASR compute latency: {compute_latency}")
                     logger.debug(f"Final user transcript: [{transcript}]")
                     await self.push_frame(TranscriptionFrame(transcript, "", time_now_iso8601(), None))
                     self.last_transcript_frame = None
@@ -574,6 +759,12 @@ class RivaASRService(STTService):
         try:
             future = asyncio.run_coroutine_threadsafe(self._queue.get(), self.get_event_loop())
             result = future.result(timeout=self._idle_timeout)
+            # Increment audio duration counter based on audio chunk size
+            # Assuming LINEAR_PCM encoding: bytes_per_sample = 2, channels = self._audio_channel_count
+            bytes_per_sample = 2  # 16-bit PCM
+            total_samples = len(result) // (bytes_per_sample * self._audio_channel_count)
+            duration_seconds = total_samples / self._sample_rate
+            self._audio_duration_counter += duration_seconds
         except concurrent.futures.TimeoutError:
             future.cancel()
             logger.info(f"ASR service is idle for {self._idle_timeout} seconds, terminating active RIVA ASR request...")

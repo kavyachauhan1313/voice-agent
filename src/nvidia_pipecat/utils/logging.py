@@ -18,8 +18,9 @@ async def logger_context(coro, **kwargs):
 def setup_default_ace_logging(
     level: str = "INFO",
     stream_id: str | None = None,
+    exclude_warning: bool = False,
 ):
-    """Setup logger for ACE.
+    """Setup logger.
 
     Updates the logging format to include stream_id if available.
 
@@ -28,6 +29,7 @@ def setup_default_ace_logging(
             If you want different stream ids for different pipelines running
             in the same process use `logger_context` instead
         level (str): Logging level
+        exclude_warning (bool): If True, exclude WARNING level logs while keeping DEBUG and INFO
     """
     logger_format = (
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -37,7 +39,14 @@ def setup_default_ace_logging(
     )
     logger.configure(extra={"stream_id": stream_id or "n/a"})  # Default values
     logger.remove()
-    logger.add(sys.stderr, format=logger_format, level=level)
+
+    # Custom filter to exclude WARNING logs if requested
+    def filter_warnings(record):
+        if exclude_warning:
+            return record["level"].name != "WARNING"
+        return True
+
+    logger.add(sys.stderr, format=logger_format, level=level, filter=filter_warnings)
 
 
 def log_execution(func):

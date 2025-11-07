@@ -1,0 +1,1133 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Register module for nvidia_flowershop package."""
+
+import asyncio
+import difflib
+import json
+import logging
+import os
+import re
+import threading
+from pathlib import Path
+
+from nat.builder.builder import Builder
+from nat.builder.context import Context
+from nat.builder.function_info import FunctionInfo
+from nat.cli.register_workflow import register_function
+from nat.data_models.function import FunctionBaseConfig
+from pydantic import Field
+
+logger = logging.getLogger(__name__)
+
+# Global variable to track API server
+_api_server_thread = None
+_api_server = None
+_api_server_instance = None  # Store the actual uvicorn server instance
+
+
+def start_inventory_api_server(menu_file_path: str = "menu.json", port: int = 8005, host: str = "0.0.0.0"):
+    """Start the inventory API server in a background thread."""
+    global _api_server_thread, _api_server, _api_server_instance
+
+    if _api_server_thread and _api_server_thread.is_alive():
+        logger.info("Inventory API server is already running")
+        return
+
+    try:
+        # Import the FastAPI app from ui_state_api (now in same package)
+        from .ui_state_api import app, inventory_manager
+
+        # Update the inventory manager's file path to use absolute path
+        current_dir = Path(__file__).parent  # src/nvidia_flowershop/
+        aiq_agent_dir = current_dir.parent.parent  # Go up to aiq_agent directory
+        abs_menu_path = os.path.abspath(os.path.join(aiq_agent_dir, menu_file_path))
+        inventory_manager.file_path = abs_menu_path
+
+        logger.info(f"Setting inventory API to use menu file: {abs_menu_path}")
+        logger.info(f"File exists: {os.path.exists(abs_menu_path)}")
+
+        # Function to run the server with proper event loop
+        def run_server():
+            import uvicorn
+
+            # Create a new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            logger.info(f"Starting inventory API server on {host}:{port}")
+            try:
+                config = uvicorn.Config(app, host=host, port=port, log_level="info")
+                server = uvicorn.Server(config)
+                # Store the server instance globally so we can shut it down
+                global _api_server_instance
+                _api_server_instance = server
+                loop.run_until_complete(server.serve())
+            except Exception as e:
+                logger.error(f"Error starting inventory API server: {e}")
+            finally:
+                loop.close()
+
+        # Start server in background thread
+        _api_server_thread = threading.Thread(target=run_server, daemon=True)
+        _api_server_thread.start()
+
+        logger.info(f"Inventory API started at http://{host}:{port}/inventory")
+        logger.info(f"API documentation available at http://{host}:{port}/docs")
+
+    except Exception as e:
+        logger.error(f"Failed to start inventory API server: {e}")
+
+
+def stop_inventory_api_server():
+    """Stop the inventory API server gracefully."""
+    global _api_server_thread, _api_server, _api_server_instance
+
+    if _api_server_thread and _api_server_thread.is_alive():
+        logger.info("Stopping inventory API server...")
+
+        try:
+            # Gracefully shutdown the uvicorn server if it exists
+            if _api_server_instance:
+                logger.info("Shutting down uvicorn server...")
+                # Signal the server to stop
+                _api_server_instance.should_exit = True
+
+                logger.info("Uvicorn server shutdown completed")
+        except Exception as e:
+            logger.warning(f"Error during graceful shutdown: {e}")
+            logger.info("Falling back to thread termination")
+
+        # Clear the global references
+        _api_server_thread = None
+        _api_server = None
+        _api_server_instance = None
+
+        logger.info("Inventory API server stopped")
+
+
+# pylint: disable=unused-argument
+
+
+# Menu Caching System
+class MenuCache:
+    """Singleton cache for menu.json to avoid repeated file I/O operations."""
+
+    _instance = None
+    _menu = None
+    _last_modified = None
+    _file_path = None
+    # New: Inventory-specific caching
+    _inventory_cache = None
+    _inventory_formatted = None
+    _inventory_last_update = None
+
+    def __new__(cls):
+        """Create a new instance or return existing singleton instance."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def get_menu(self, file_path: str) -> dict:
+        """Get cached menu or load from file if not cached or file changed.
+
+        Args:
+            file_path: Path to the menu JSON file
+
+        Returns:
+            Dictionary containing menu data, empty dict if file not found/invalid
+        """
+        # Check if we need to load/reload the menu
+        if self._should_reload_menu(file_path):
+            self._load_menu(file_path)
+        return self._menu or {}
+
+    def get_inventory(self, file_path: str) -> str:
+        """Get pre-formatted inventory string for faster retrieval.
+
+        Args:
+            file_path: Path to the menu JSON file
+
+        Returns:
+            Pre-formatted inventory string
+        """
+        # Check if inventory cache is valid
+        if self._is_inventory_cache_valid(file_path):
+            return self._inventory_formatted or "Inventory is currently unavailable. Please try again later."
+
+        # Update inventory cache
+        self._update_inventory_cache(file_path)
+        return self._inventory_formatted or "Inventory is currently unavailable. Please try again later."
+
+    def _is_inventory_cache_valid(self, file_path: str) -> bool:
+        """Check if inventory cache is still valid."""
+        import os
+
+        # No cache exists
+        if self._inventory_cache is None or self._inventory_formatted is None:
+            return False
+
+        # File path changed
+        if self._file_path != file_path:
+            return False
+
+        # File doesn't exist
+        if not os.path.exists(file_path):
+            return False
+
+        # File modified since last cache update
+        try:
+            current_modified = os.path.getmtime(file_path)
+            if self._inventory_last_update != current_modified:
+                return False
+        except OSError:
+            return False
+
+        return True
+
+    def _update_inventory_cache(self, file_path: str):
+        """Update inventory-specific cache with pre-formatted strings."""
+        import os
+
+        menu_data = self.get_menu(file_path)
+        if not menu_data or "inventory" not in menu_data:
+            self._inventory_cache = {}
+            self._inventory_formatted = "No inventory data found in the menu file."
+            self._inventory_last_update = None
+            return
+
+        self._inventory_cache = menu_data["inventory"].copy()
+
+        # Pre-compute formatted inventory string
+        formatted_lines = ["INVENTORY:", ""]
+        for item, quantity in self._inventory_cache.items():
+            status = "in stock" if quantity > 0 else "out of stock"
+            formatted_lines.append(f"{item}: {quantity} {status}")
+
+        self._inventory_formatted = "\n".join(formatted_lines)
+
+        # Update timestamp
+        try:
+            self._inventory_last_update = os.path.getmtime(file_path)
+        except OSError:
+            self._inventory_last_update = None
+
+    def get_item_stock(self, file_path: str, items: str | list[str]) -> int | dict[str, int]:
+        """Quick inventory check for one or more items without full cache reload.
+
+        Args:
+            file_path: Path to the menu JSON file
+            items: Single item name (str) or list of item names (List[str])
+
+        Returns:
+            - If items is str: Current inventory quantity (int), or -1 if item not found
+            - If items is List[str]: Dictionary mapping item names to quantities (-1 if not found)
+        """
+        # Ensure inventory cache is valid
+        if not self._is_inventory_cache_valid(file_path):
+            self._update_inventory_cache(file_path)
+
+        if not self._inventory_cache:
+            if isinstance(items, str):
+                return -1
+            else:
+                return {name: -1 for name in items}
+
+        # Handle single item case
+        if isinstance(items, str):
+            return self._inventory_cache.get(items, -1)
+
+        # Handle multiple items case
+        return {name: self._inventory_cache.get(name, -1) for name in items}
+
+    def get_low_stock_items(self, file_path: str, threshold: int = 5) -> dict:
+        """Get items with low stock levels efficiently.
+
+        Args:
+            file_path: Path to the menu JSON file
+            threshold: Stock level threshold (default: 5)
+
+        Returns:
+            Dictionary of items with stock <= threshold
+        """
+        # Ensure inventory cache is valid
+        if not self._is_inventory_cache_valid(file_path):
+            self._update_inventory_cache(file_path)
+
+        if not self._inventory_cache:
+            return {}
+
+        return {name: qty for name, qty in self._inventory_cache.items() if qty <= threshold}
+
+    def _should_reload_menu(self, file_path: str) -> bool:
+        """Check if menu should be reloaded."""
+        import os
+
+        # First load
+        if self._menu is None or self._file_path != file_path:
+            return True
+
+        # File doesn't exist
+        if not os.path.exists(file_path):
+            return False
+
+        # File modified
+        try:
+            current_modified = os.path.getmtime(file_path)
+            if self._last_modified != current_modified:
+                return True
+        except OSError:
+            return False
+
+        return False
+
+    def _load_menu(self, file_path: str):
+        """Load menu from file and update cache."""
+        import json
+        import os
+
+        self._file_path = file_path
+
+        if not os.path.exists(file_path):
+            logger.warning(f"Menu file not found: {file_path}")
+            self._menu = {}
+            self._last_modified = None
+            # Clear inventory cache too
+            self._inventory_cache = None
+            self._inventory_formatted = None
+            self._inventory_last_update = None
+            return
+
+        try:
+            self._last_modified = os.path.getmtime(file_path)
+            with open(file_path) as f:
+                self._menu = json.load(f)
+            logger.info(f"Menu loaded successfully from {file_path}")
+
+            # Invalidate inventory cache since menu changed
+            self._inventory_cache = None
+            self._inventory_formatted = None
+            self._inventory_last_update = None
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in menu file {file_path}: {e}")
+            self._menu = {}
+            self._inventory_cache = None
+            self._inventory_formatted = None
+            self._inventory_last_update = None
+        except OSError as e:
+            logger.error(f"Error reading menu file {file_path}: {e}")
+            self._menu = {}
+            self._inventory_cache = None
+            self._inventory_formatted = None
+            self._inventory_last_update = None
+
+    def clear_cache(self):
+        """Clear the cached menu (useful for testing)."""
+        self._menu = None
+        self._last_modified = None
+        self._file_path = None
+        # Clear inventory cache too
+        self._inventory_cache = None
+        self._inventory_formatted = None
+        self._inventory_last_update = None
+
+    def update_inventory(self, file_path: str, item_name: str, quantity_change: int) -> bool:
+        """Update inventory for an item by changing the quantity.
+
+        Args:
+            file_path: Path to the menu JSON file
+            item_name: Name of the item to update
+            quantity_change: Amount to change (positive to add, negative to remove)
+
+        Returns:
+            True if update was successful, False otherwise
+        """
+        import json
+        import os
+
+        # Load current menu data
+        menu_data = self.get_menu(file_path)
+        if not menu_data or "inventory" not in menu_data:
+            return False
+
+        # Check if item exists in inventory
+        if item_name not in menu_data["inventory"]:
+            return False
+
+        # Calculate new quantity
+        current_quantity = menu_data["inventory"][item_name]
+        new_quantity = current_quantity + quantity_change
+
+        # Don't allow negative inventory
+        if new_quantity < 0:
+            return False
+
+        # Update inventory
+        menu_data["inventory"][item_name] = new_quantity
+
+        # Write back to file
+        try:
+            import tempfile
+
+            # Write to temporary file first
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=os.path.dirname(file_path), delete=False, suffix=".tmp"
+            ) as tmp_file:
+                json.dump(menu_data, tmp_file, indent=2)
+                tmp_file_path = tmp_file.name
+
+            # Atomically replace original file
+            os.replace(tmp_file_path, file_path)
+
+            # Update cache
+            self._menu = menu_data
+            self._last_modified = os.path.getmtime(file_path)
+
+            # Update inventory cache efficiently
+            if self._inventory_cache is not None:
+                self._inventory_cache[item_name] = new_quantity
+                # Regenerate formatted string
+                self._update_inventory_cache(file_path)
+
+            return True
+        except Exception as e:
+            logger.error(f"Error updating inventory file {file_path}: {e}")
+            return False
+
+
+# Create global menu cache instance
+menu_cache = MenuCache()
+
+# Start the inventory API server as soon as MenuCache is initialized
+start_inventory_api_server()
+
+
+class Cart:
+    """Shopping cart class for managing cart operations."""
+
+    def __init__(self):
+        """Initialize an empty shopping cart."""
+        self._items = {}  # {item_name: quantity}
+
+    def add_item(self, item_name: str, quantity: int, price: float) -> dict:
+        """Add an item to the cart.
+
+        Args:
+            item_name: Name of the item
+            quantity: Quantity to add
+            price: Price per item
+
+        Returns:
+            Dict with success status, message, and updated cart
+        """
+        if quantity <= 0:
+            return {"success": False, "message": "Quantity must be positive", "cart": self.get_cart_json()}
+
+        current_quantity = self._items.get(item_name, 0)
+        new_quantity = current_quantity + quantity
+        self._items[item_name] = new_quantity
+
+        total_price = quantity * price
+        return {
+            "success": True,
+            "message": f"Added {quantity} {item_name} worth ${total_price:.2f} to cart",
+            "cart": self.get_cart_json(),
+            "quantity_added": quantity,
+            "total_price": total_price,
+        }
+
+    def remove_item(self, item_name: str, quantity: int, price: float) -> dict:
+        """Remove an item from the cart.
+
+        Args:
+            item_name: Name of the item
+            quantity: Quantity to remove
+            price: Price per item
+
+        Returns:
+            Dict with success status, message, and updated cart
+        """
+        if item_name not in self._items:
+            return {
+                "success": False,
+                "message": f"Item '{item_name}' not found in cart",
+                "cart": self.get_cart_json(),
+            }
+
+        current_quantity = self._items[item_name]
+        remove_quantity = min(quantity, current_quantity)
+
+        if remove_quantity <= 0:
+            return {"success": False, "message": "No quantity to remove", "cart": self.get_cart_json()}
+
+        new_quantity = current_quantity - remove_quantity
+        if new_quantity <= 0:
+            del self._items[item_name]
+        else:
+            self._items[item_name] = new_quantity
+
+        total_price = remove_quantity * price
+        return {
+            "success": True,
+            "message": f"Removed {remove_quantity} {item_name} worth ${total_price:.2f} from cart",
+            "cart": self.get_cart_json(),
+            "quantity_removed": remove_quantity,
+            "total_price": total_price,
+        }
+
+    def clear(self, menu_items: dict) -> dict:
+        """Clear the entire cart.
+
+        Args:
+            menu_items: Dictionary of menu items with prices
+
+        Returns:
+            Dict with success status, message, and cleared cart
+        """
+        if not self._items:
+            return {"success": True, "message": "Cart is already empty", "cart": self.get_cart_json()}
+
+        total_quantity = sum(self._items.values())
+        total_price = sum(qty * menu_items.get(item, {}).get("price", 0) for item, qty in self._items.items())
+
+        # Store items for restocking before clearing
+        items_to_restock = self._items.copy()
+
+        self._items.clear()
+
+        return {
+            "success": True,
+            "message": f"Cleared cart with total quantity {total_quantity} worth ${total_price:.2f}",
+            "cart": self.get_cart_json(),
+            "total_quantity": total_quantity,
+            "total_price": total_price,
+            "items_to_restock": items_to_restock,
+        }
+
+    def view(self, menu_items: dict) -> dict:
+        """View the current cart contents.
+
+        Args:
+            menu_items: Dictionary of menu items with prices
+
+        Returns:
+            Dict with cart information
+        """
+        if not self._items:
+            return {
+                "success": True,
+                "message": "Your cart is empty",
+                "cart": self.get_cart_json(),
+                "total_quantity": 0,
+                "total_price": 0.0,
+            }
+
+        total_quantity = sum(self._items.values())
+        total_price = sum(qty * menu_items.get(item, {}).get("price", 0) for item, qty in self._items.items())
+
+        return {
+            "success": True,
+            "message": f"Your cart has {total_quantity} items worth ${total_price:.2f}",
+            "cart": self.get_cart_json(),
+            "total_quantity": total_quantity,
+            "total_price": total_price,
+        }
+
+    def get_cart_json(self) -> str:
+        """Get cart contents as JSON string."""
+        return json.dumps(self._items)
+
+    def is_empty(self) -> bool:
+        """Check if cart is empty."""
+        return len(self._items) == 0
+
+    def get_items(self) -> dict:
+        """Get cart items dictionary."""
+        return self._items.copy()
+
+    def has_item(self, item_name: str) -> bool:
+        """Check if cart contains an item."""
+        return item_name in self._items
+
+    def get_item_quantity(self, item_name: str) -> int:
+        """Get quantity of a specific item in cart."""
+        return self._items.get(item_name, 0)
+
+
+# Global cart instances - could be extended for per-user cart management
+global_cart = Cart()
+
+# Dictionary to store per-user carts (demonstration of user-specific state management)
+user_carts = {}  # Format: {user_id: Cart()}
+
+
+def get_user_cart(user_id: str) -> Cart:
+    """Get or create a cart for a specific user.
+
+    Args:
+        user_id: The user's session/identification string
+
+    Returns:
+        Cart instance for the user
+    """
+    if user_id not in user_carts:
+        user_carts[user_id] = Cart()
+    return user_carts[user_id]
+
+
+class GetMenuToolConfig(FunctionBaseConfig, name="get_menu"):
+    """Configuration for the get_menu tool."""
+
+    file_path: str = Field(default="menu.json", description="Path to the menu JSON file")
+
+
+@register_function(config_type=GetMenuToolConfig)
+async def get_menu(config: GetMenuToolConfig, builder: Builder):
+    """Register the get_menu function."""
+
+    async def _get_menu(unused_input: str) -> str:
+        menu_data = menu_cache.get_menu(config.file_path)
+        if not menu_data:
+            return "Menu is currently unavailable. Please try again later."
+
+        # Handle the actual menu structure (menu.json has a "menu" key)
+        if "menu" in menu_data:
+            menu_items = menu_data["menu"]
+        else:
+            menu_items = menu_data
+
+        # Format menu in simple "X costs Y" format
+        formatted_menu = "MENU:\n\n"
+
+        for item, item_data in menu_items.items():
+            formatted_menu += f"{item} with description {item_data['description']} costs ${item_data['price']:.2f}\n"
+
+        return formatted_menu.strip()
+
+    # Create a Generic NAT Toolkit tool that can be used with any supported LLM framework
+    yield FunctionInfo.from_fn(
+        _get_menu,
+        description=(
+            "This is a tool to get the menu. This tool doesn't require input. "
+            "It returns the current menu with item descriptions and prices."
+        ),
+    )
+
+
+class GetInventoryToolConfig(FunctionBaseConfig, name="get_inventory"):
+    """Configuration for the get_inventory tool."""
+
+    file_path: str = Field(default="menu.json", description="Path to the menu JSON file")
+
+
+@register_function(config_type=GetInventoryToolConfig)
+async def get_inventory(config: GetInventoryToolConfig, builder: Builder):
+    """Register the get_inventory function."""
+
+    async def _get_inventory(unused: str) -> str:
+        # Use the optimized inventory cache for instant retrieval
+        return menu_cache.get_inventory(config.file_path)
+
+    # Create a Generic AIQ Toolkit tool that can be used with any supported LLM framework
+    yield FunctionInfo.from_fn(
+        _get_inventory,
+        description=(
+            "This is a tool to get the current inventory. "
+            "It returns the stock levels for all items without requiring any input."
+        ),
+    )
+
+
+class CheckItemStockToolConfig(FunctionBaseConfig, name="check_item_stock"):
+    """Configuration for the check_item_stock tool."""
+
+    file_path: str = Field(default="menu.json", description="Path to the menu JSON file")
+
+
+@register_function(config_type=CheckItemStockToolConfig)
+async def check_item_stock(config: CheckItemStockToolConfig, builder: Builder):
+    """Register the check_item_stock function."""
+
+    async def _check_item_stock(item_name: str) -> str:
+        """Check stock for a specific item quickly."""
+        stock_level = menu_cache.get_item_stock(config.file_path, item_name)
+
+        if stock_level == -1:
+            return f"Item '{item_name}' not found in inventory"
+        elif stock_level == 0:
+            return f"{item_name}: 0 out of stock"
+        elif stock_level <= 5:
+            return f"{item_name}: {stock_level} in stock (LOW STOCK WARNING)"
+        else:
+            return f"{item_name}: {stock_level} in stock"
+
+    yield FunctionInfo.from_fn(
+        _check_item_stock,
+        description=(
+            "This tool quickly checks the stock level for a specific item. "
+            "It takes an item name as input and returns just that item's stock status. "
+            "This is much faster than getting the full inventory when you only need one item."
+        ),
+    )
+
+
+class GetPriceToolConfig(FunctionBaseConfig, name="get_price"):
+    """Configuration for the get_price tool."""
+
+    file_path: str = Field(default="menu.json", description="Path to the menu JSON file")
+
+
+@register_function(config_type=GetPriceToolConfig)
+async def get_price(config: GetPriceToolConfig, builder: Builder):
+    """Register the get_price function."""
+
+    async def _get_price(text: str) -> str:
+        menu_data = menu_cache.get_menu(config.file_path)
+        if not menu_data:
+            return "Error: Menu is currently unavailable"
+
+        # Handle the actual menu structure (menu.json has a "menu" key)
+        if "menu" in menu_data:
+            menu_items = menu_data["menu"]
+        else:
+            menu_items = menu_data
+
+        # First try exact match (case-insensitive)
+        for item, item_data in menu_items.items():
+            if item.lower() == text.lower():
+                return f"The price for {item} is ${item_data['price']:.2f}"
+
+        # If no exact match, find most similar item
+        import difflib
+
+        best_match = None
+        best_similarity = 0.0
+
+        for item in menu_items:
+            # Calculate similarity ratio
+            similarity = difflib.SequenceMatcher(None, text.lower(), item.lower()).ratio()
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = item
+
+        # If we found a reasonably similar item (similarity > 0.5), suggest it
+        if best_match and best_similarity > 0.5:
+            return f"Item '{text}' not found. Did you mean '{best_match}'?"
+
+        # No good match found
+        return f"Item '{text}' not found in menu. Please check the menu for available items."
+
+    # Create a Generic AIQ Toolkit tool that can be used with any supported LLM framework
+    yield FunctionInfo.from_fn(
+        _get_price,
+        description=(
+            "This is a tool to get the price of an item. "
+            "It takes an item name as input and returns the price. "
+            "If exact match is not found, it suggests the most similar item."
+        ),
+    )
+
+
+class AddToCartToolConfig(FunctionBaseConfig, name="add_to_cart"):
+    """Configuration for the add_to_cart tool."""
+
+    file_path: str = Field(default="menu.json", description="Path to the menu JSON file")
+
+
+@register_function(config_type=AddToCartToolConfig)
+async def add_to_cart(config: AddToCartToolConfig, builder: Builder):
+    """Register the add_to_cart function."""
+
+    async def _add_to_cart(text: str) -> str:
+        # Get user session information
+        try:
+            context = Context.get()
+            user_id = None
+
+            if hasattr(context, "metadata") and context.metadata.cookies:
+                user_id = context.metadata.cookies.get("nat-session")
+        except Exception:
+            user_id = None
+
+        # Parse input to extract item name and quantity
+        # Expected format: "add [quantity] item_name" or just "item_name"
+        quantity_match = re.search(r"(\d+)\s+(.+)", text.lower())
+        if quantity_match:
+            quantity = int(quantity_match.group(1))
+            item_name = quantity_match.group(2).strip()
+        else:
+            quantity = 1
+            item_name = text.strip()
+
+        # Load menu to validate item exists
+        menu_data = menu_cache.get_menu(config.file_path)
+        if not menu_data:
+            return "Error: Menu is currently unavailable"
+
+        # Handle the actual menu structure (menu.json has a "menu" key)
+        if "menu" in menu_data:
+            menu_items = menu_data["menu"]
+        else:
+            menu_items = menu_data
+
+        # Search for item in menu (case-insensitive)
+        found_item_name = None
+        item_price = None
+
+        for item, item_data in menu_items.items():
+            if item.lower() == item_name.lower():
+                found_item_name = item
+                item_price = item_data["price"]
+                break
+
+        # If no exact match, try fuzzy matching
+        if found_item_name is None:
+            best_match = None
+            best_similarity = 0.0
+
+            for item in menu_items:
+                similarity = difflib.SequenceMatcher(None, item_name.lower(), item.lower()).ratio()
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = item
+
+            # If we found a reasonably similar item, suggest it instead of failing
+            if best_match and best_similarity > 0.5:
+                return (
+                    f"Item '{item_name}' not found. Did you mean '{best_match}'? "
+                    "Please try again with the correct name."
+                )
+
+            # Get current cart for error message
+            if user_id:
+                current_cart = get_user_cart(user_id)
+            else:
+                current_cart = global_cart
+
+            return (
+                f"Error: '{item_name}' not found in menu. Please check the menu for "
+                f"available items. No changes to Cart: {current_cart.get_cart_json()}"
+            )
+
+        # Check available inventory before adding to cart
+        available_stock = menu_cache.get_item_stock(config.file_path, found_item_name)
+
+        # Get user-specific cart
+        if user_id:
+            user_cart = get_user_cart(user_id)
+        else:
+            user_cart = global_cart
+
+        if available_stock == -1:
+            return f"Error: Could not check inventory for '{found_item_name}'. Cart: {user_cart.get_cart_json()}"
+
+        if available_stock == 0:
+            return f"Sorry, '{found_item_name}' is out of stock. Cart: {user_cart.get_cart_json()}"
+
+        # Calculate actual quantity to add (minimum of requested vs available)
+        actual_quantity = min(quantity, available_stock)
+
+        # Add available quantity to cart using Cart class
+        result = user_cart.add_item(found_item_name, actual_quantity, item_price)
+
+        if result["success"]:
+            # Update inventory (reduce stock by actual quantity added)
+            menu_cache.update_inventory(config.file_path, found_item_name, -actual_quantity)
+
+            # Notify WebSocket clients of changes
+            try:
+                from .ui_state_api import notify_cart_change, notify_inventory_change
+
+                # Use asyncio.gather to run both notifications concurrently with overall timeout
+                # This prevents sequential blocking and provides better performance
+                await asyncio.wait_for(
+                    asyncio.gather(notify_cart_change(), notify_inventory_change(), return_exceptions=True), timeout=3.0
+                )
+            except TimeoutError:
+                logger.warning("WebSocket notifications timed out after 3 seconds")
+            except Exception as e:
+                logger.warning(f"Could not send WebSocket notifications: {e}")
+
+            # Notify user about quantity adjustment if needed
+            if actual_quantity < quantity:
+                shortage = quantity - actual_quantity
+                return (
+                    f"{result['message']} Note: Only {actual_quantity} of {quantity} "
+                    f"requested items were available. {shortage} items were not available. "
+                    f"Updated cart: {result['cart']}"
+                )
+            else:
+                return f"{result['message']}. Updated cart: {result['cart']}"
+        else:
+            return f"Error adding item to cart: {result['message']}. Cart: {result['cart']}"
+
+    yield FunctionInfo.from_fn(
+        _add_to_cart,
+        description=(
+            "Adds an item to the cart. Input: text (item name or 'quantity item'). "
+            "On update, returns: 'Added {quantity} {item} worth {total_price} to cart. Updated cart: {cart_status}'. "
+            "If no update occurs (e.g., item not found), returns a brief message."
+        ),
+    )
+
+
+class RemoveFromCartToolConfig(FunctionBaseConfig, name="remove_from_cart"):
+    """Configuration for the remove_from_cart tool."""
+
+    file_path: str = Field(default="menu.json", description="Path to the menu JSON file")
+
+
+@register_function(config_type=RemoveFromCartToolConfig)
+async def remove_from_cart(config: RemoveFromCartToolConfig, builder: Builder):
+    """Register the remove_from_cart function."""
+    import re
+
+    async def _remove_from_cart(text: str) -> str:
+        # Get user session information
+        try:
+            context = Context.get()
+            user_id = None
+
+            if hasattr(context, "metadata") and context.metadata.cookies:
+                user_id = context.metadata.cookies.get("nat-session")
+        except Exception:
+            user_id = None
+
+        # Parse input to extract item name and quantity
+        # Expected format: "remove [quantity] item_name" or just "item_name"
+        quantity_match = re.search(r"(\d+)\s+(.+)", text.lower())
+        if quantity_match:
+            quantity = int(quantity_match.group(1))
+            item_name = quantity_match.group(2).strip()
+        else:
+            quantity = 1
+            item_name = text.strip()
+
+        # Load menu to get prices
+        menu_data = menu_cache.get_menu(config.file_path)
+        if not menu_data:
+            return "Error: Menu is currently unavailable"
+
+        # Handle the actual menu structure (menu.json has a "menu" key)
+        if "menu" in menu_data:
+            menu_items = menu_data["menu"]
+        else:
+            menu_items = menu_data
+
+        # Get user-specific cart
+        if user_id:
+            user_cart = get_user_cart(user_id)
+        else:
+            user_cart = global_cart
+
+        # Find the actual item name in the cart (case-insensitive); try fuzzy match if needed
+        cart_items = user_cart.get_items()
+        actual_item_name = None
+
+        for existing_name in cart_items:
+            if existing_name.lower() == item_name.lower():
+                actual_item_name = existing_name
+                break
+
+        if actual_item_name is None:
+            try:
+                import difflib
+
+                if cart_items:
+                    best_match = None
+                    best_similarity = 0.0
+                    for existing_name in cart_items:
+                        similarity = difflib.SequenceMatcher(None, item_name.lower(), existing_name.lower()).ratio()
+                        if similarity > best_similarity:
+                            best_similarity = similarity
+                            best_match = existing_name
+                    if best_match and best_similarity > 0.5:
+                        return (
+                            f"Item '{item_name}' not found in cart. Did you mean '{best_match}'? "
+                            f"No changes to Cart: {user_cart.get_cart_json()}"
+                        )
+            except Exception:
+                pass
+            return f"Item '{item_name}' not found in cart. No changes to Cart: {user_cart.get_cart_json()}"
+
+        # Get item price from menu
+        item_price = menu_items.get(actual_item_name, {}).get("price", 0)
+
+        # Remove item from cart using Cart class
+        result = user_cart.remove_item(actual_item_name, quantity, item_price)
+
+        if result["success"]:
+            # Update inventory (restock the removed quantity)
+            menu_cache.update_inventory(config.file_path, actual_item_name, result["quantity_removed"])
+
+            # Notify WebSocket clients of changes
+            try:
+                from .ui_state_api import notify_cart_change, notify_inventory_change
+
+                # Use asyncio.gather to run both notifications concurrently with overall timeout
+                # This prevents sequential blocking and provides better performance
+                await asyncio.wait_for(
+                    asyncio.gather(notify_cart_change(), notify_inventory_change(), return_exceptions=True), timeout=3.0
+                )
+            except TimeoutError:
+                logger.warning("WebSocket notifications timed out after 3 seconds")
+            except Exception as e:
+                logger.warning(f"Could not send WebSocket notifications: {e}")
+
+            return f"{result['message']}. Updated cart: {result['cart']}"
+        else:
+            return f"Error removing item from cart: {result['message']}. Cart: {result['cart']}"
+
+    yield FunctionInfo.from_fn(
+        _remove_from_cart,
+        description=(
+            "This tool removes an item from the shopping cart. "
+            "Input: text (item name or 'quantity item'). "
+            "On update, returns: 'Removed {quantity} {item} worth {total_price} from cart. "
+            "Updated cart: {cart_status}'. "
+            "If item is not in cart, returns a brief message."
+        ),
+    )
+
+
+class ClearCartToolConfig(FunctionBaseConfig, name="clear_cart"):
+    """Configuration for the clear_cart tool."""
+
+    file_path: str = Field(default="menu.json", description="Path to the menu JSON file")
+
+
+@register_function(config_type=ClearCartToolConfig)
+async def clear_cart(config: ClearCartToolConfig, builder: Builder):
+    """Register the clear_cart function."""
+
+    async def _clear_cart(unused: str) -> str:
+        # Get user session information
+        try:
+            context = Context.get()
+            user_id = None
+
+            if hasattr(context, "metadata") and context.metadata.cookies:
+                user_id = context.metadata.cookies.get("nat-session")
+        except Exception:
+            user_id = None
+
+        # Load menu for pricing
+        menu_data = menu_cache.get_menu(config.file_path)
+        if not menu_data:
+            return "Error: Menu is currently unavailable"
+
+        # Handle the actual menu structure (menu.json has a "menu" key)
+        if "menu" in menu_data:
+            menu_items = menu_data["menu"]
+        else:
+            menu_items = menu_data
+
+        # Get user-specific cart
+        if user_id:
+            user_cart = get_user_cart(user_id)
+        else:
+            user_cart = global_cart
+
+        # Clear cart using Cart class
+        result = user_cart.clear(menu_items)
+
+        if result["success"]:
+            # Restock inventory for all items that were cleared
+            if "items_to_restock" in result:
+                for item_name, quantity in result["items_to_restock"].items():
+                    try:
+                        if quantity > 0:
+                            menu_cache.update_inventory(config.file_path, item_name, quantity)
+                    except Exception as e:
+                        logger.warning(f"Failed to restock {item_name}: {e}")
+                        continue
+
+            # Notify WebSocket clients of changes
+            try:
+                from .ui_state_api import notify_cart_change, notify_inventory_change
+
+                # Use asyncio.gather to run both notifications concurrently with overall timeout
+                # This prevents sequential blocking and provides better performance
+                await asyncio.wait_for(
+                    asyncio.gather(notify_cart_change(), notify_inventory_change(), return_exceptions=True), timeout=3.0
+                )
+            except TimeoutError:
+                logger.warning("WebSocket notifications timed out after 3 seconds")
+            except Exception as e:
+                logger.warning(f"Could not send WebSocket notifications: {e}")
+
+            return f"{result['message']}. Updated cart: {result['cart']}"
+        else:
+            return f"Error clearing cart: {result['message']}. Cart: {result['cart']}"
+
+    yield FunctionInfo.from_fn(
+        _clear_cart,
+        description=(
+            "Clears the cart. This tool doesn't require any meaningful input. "
+            "Restocks inventory for all items found in the cart, then returns: "
+            "'Cleared cart with total quantity {quantity} worth {price}. Updated cart: {}'."
+        ),
+    )
+
+
+class ViewCartToolConfig(FunctionBaseConfig, name="view_cart"):
+    """Configuration for the view_cart tool."""
+
+    file_path: str = Field(default="menu.json", description="Path to the menu JSON file")
+
+
+@register_function(config_type=ViewCartToolConfig)
+async def view_cart(config: ViewCartToolConfig, builder: Builder):
+    """Register the view_cart function."""
+
+    async def _view_cart(unused_input: str) -> str:
+        # Get user session information
+        try:
+            context = Context.get()
+            user_id = None
+
+            if hasattr(context, "metadata") and context.metadata.cookies:
+                user_id = context.metadata.cookies.get("nat-session")
+        except Exception:
+            user_id = None
+
+        # Load menu for pricing
+        menu_data = menu_cache.get_menu(config.file_path)
+        if not menu_data:
+            return "Error: Menu is currently unavailable"
+
+        # Handle the actual menu structure (menu.json has a "menu" key)
+        if "menu" in menu_data:
+            menu_items = menu_data["menu"]
+        else:
+            menu_items = menu_data
+
+        # Use per-user cart if user_id is available, otherwise use global cart
+        if user_id:
+            user_cart = get_user_cart(user_id)
+            result = user_cart.view(menu_items)
+        else:
+            result = global_cart.view(menu_items)
+
+        return f"{result['message']}. Current cart: {result['cart']}"
+
+    yield FunctionInfo.from_fn(
+        _view_cart,
+        description=(
+            "Shows the current shopping cart. This tool doesn't require input. "
+            "Returns the cart contents with total quantity, total price, and current cart status as JSON."
+        ),
+    )

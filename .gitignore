@@ -31,4 +31,6 @@ docs/build/
 
 *.log
 nim_cache/
+riva_cache/
+llm_cache/
 audio_dumps/

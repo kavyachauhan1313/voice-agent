@@ -1,3 +1,0 @@
-[submodule "examples/healthcare_voice_agent/GenerativeAIExamples"]
-	path = examples/healthcare_voice_agent/GenerativeAIExamples
-	url = https://github.com/NVIDIA/GenerativeAIExamples.git

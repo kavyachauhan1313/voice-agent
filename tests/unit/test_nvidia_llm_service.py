@@ -278,7 +278,7 @@ async def test_process_context_with_think_filtering():
     with patch.multiple(
         NvidiaLLMService,
         create_client=DEFAULT,
-        _stream_chat_completions=DEFAULT,
+        _stream_chat_completions_specific_context=DEFAULT,
         start_ttfb_metrics=DEFAULT,
         stop_ttfb_metrics=DEFAULT,
         push_frame=DEFAULT,
@@ -292,7 +292,7 @@ async def test_process_context_with_think_filtering():
             MockChatCompletionChunk(content="/think>Real content"),
             MockChatCompletionChunk(content=" continues"),
         ]
-        mocks["_stream_chat_completions"].return_value = MockAsyncStream(chunks)
+        mocks["_stream_chat_completions_specific_context"].return_value = MockAsyncStream(chunks)
 
         # Process context
         context = OpenAILLMContext(messages=[{"role": "user", "content": "Test query"}])
@@ -308,9 +308,9 @@ async def test_process_context_with_function_calls():
     """Test handling of function calls from LLM."""
     with (
         patch.object(NvidiaLLMService, "create_client"),
-        patch.object(NvidiaLLMService, "_stream_chat_completions") as mock_stream,
-        patch.object(NvidiaLLMService, "has_function") as mock_has_function,
-        patch.object(NvidiaLLMService, "call_function") as mock_call_function,
+        patch.object(NvidiaLLMService, "_stream_chat_completions_specific_context") as mock_stream,
+        patch.object(NvidiaLLMService, "has_function", new=AsyncMock(), create=True) as mock_has_function,
+        patch.object(NvidiaLLMService, "call_function", new=AsyncMock(), create=True) as mock_call_function,
     ):
         service = NvidiaLLMService(api_key="test_api_key")
 
@@ -346,7 +346,7 @@ async def test_process_context_with_mistral_preprocessing():
     """Test processing context with Mistral message preprocessing."""
     with (
         patch.object(NvidiaLLMService, "create_client"),
-        patch.object(NvidiaLLMService, "_stream_chat_completions") as mock_stream,
+        patch.object(NvidiaLLMService, "_stream_chat_completions_specific_context") as mock_stream,
     ):
         service = NvidiaLLMService(api_key="test_api_key", mistral_model_support=True)
 

@@ -3,6 +3,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import waitForICEGatheringComplete from "../utils/waitForICEGatheringComplete";
+import { useMutation } from "@tanstack/react-query";
 
 interface Params {
   url: string;
@@ -25,7 +26,7 @@ interface ReturnConnected {
   stop: () => void;
   micStream: MediaStream;
   stream: MediaStream;
-  websocket: WebSocket;
+  dataChannel: RTCDataChannel;
 }
 
 interface ReturnError {
@@ -42,13 +43,23 @@ export default function usePipecatWebRTC(params: Params): Return {
   const micStreamRef = useRef<MediaStream | null>(null);
   const outputStreamRef = useRef<MediaStream | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  // const wsRef = useRef<WebSocket | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
+
+  const offerMutation = useMutation({
+    mutationKey: ["offer"],
+    mutationFn: async (offer: RTCSessionDescriptionInit) => {
+      const res = await fetch(params.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+  });
 
   const stop = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
     for (const stream of [micStreamRef, outputStreamRef]) {
       if (stream.current) {
         for (const track of stream.current.getTracks()) {
@@ -72,6 +83,27 @@ export default function usePipecatWebRTC(params: Params): Return {
     try {
       const pc = new RTCPeerConnection(params.rtcConfig);
       pcRef.current = pc;
+
+      const dataChannel = pc.createDataChannel("messaging", { ordered: true });
+      dataChannelRef.current = dataChannel;
+
+      dataChannel.onopen = () => {
+        console.log("Data channel opened");
+        dataChannel.send(JSON.stringify({
+          id: "unique-message-id",
+          label: "rtvi-ai",       
+          type: "client-message",
+          data: {
+            t: "text-message",
+            d: "Hello from the client"
+          }
+        }));
+      };
+
+      dataChannel.onclose = () => {
+        dataChannelRef.current = null;
+      };
+
       pc.oniceconnectionstatechange = () => {
         console.log("oniceconnectionstatechange", pc?.iceConnectionState);
       };
@@ -102,6 +134,8 @@ export default function usePipecatWebRTC(params: Params): Return {
         audio: true,
       });
       const micTrack = micStreamRef.current.getAudioTracks()[0];
+      // Mute microphone by default until Start
+      micTrack.enabled = false;
 
       // SmallWebRTCTransport expects to receive both transceivers
       pc.addTransceiver(micTrack, { direction: "sendrecv" });
@@ -110,30 +144,8 @@ export default function usePipecatWebRTC(params: Params): Return {
       await waitForICEGatheringComplete(pc);
       const offer = pc.localDescription;
 
-      const answer = await new Promise((resolve, reject) => {
-        const ws = new WebSocket(params.url);
-        wsRef.current = ws;
 
-        ws.onopen = () => {
-          if (offer) {
-            ws.send(JSON.stringify({ sdp: offer.sdp, type: offer.type }));
-          }
-        };
-
-        ws.onmessage = (event) => {
-          resolve(JSON.parse(event.data));
-        };
-
-        ws.onerror = (error) => {
-          console.error("WebSocket Error:", error);
-          reject(
-            new Error(
-              `WebSocket error. Is the server running and reachable at ${params.url}?`
-            )
-          );
-        };
-      });
-
+      const answer = await offerMutation.mutateAsync(offer as RTCSessionDescriptionInit);
       await pc.setRemoteDescription(answer as RTCSessionDescriptionInit);
     } catch (e) {
       stop();
@@ -163,7 +175,7 @@ export default function usePipecatWebRTC(params: Params): Return {
         stop,
         micStream: micStreamRef.current!,
         stream: outputStreamRef.current!,
-        websocket: wsRef.current!,
+        dataChannel: dataChannelRef.current!,
       };
     case "error":
       return { status, start, error: error! };

@@ -1,19 +1,21 @@
-# ACE Controller SDK
+# Riva Voice Agent Examples
 
-The ACE Controller SDK allows you to build your own ACE Controller service to manage multimodal, real-time interactions with voice bots and avatars using NVIDIA ACE. With the SDK, you can create controllers that leverage the Python-based open-source [Pipecat framework](https://github.com/pipecat-ai/pipecat) for creating real-time, voice-enabled, and multimodal conversational AI agents. The SDK contains enhancements to the Pipecat framework, enabling developers to effortlessly customize, debug, and deploy complex pipelines while integrating robust NVIDIA Services into the Pipecat ecosystem.
+This repository contains examples demonstrating how to build voice-enabled conversational AI agents using the NVIDIA services, built using [the Pipecat framework](https://github.com/pipecat-ai/pipecat). These examples demonstrate various implementation patterns, ranging from simple LLM-based conversations to complex agentic workflows, and from WebSocket-based solutions to advanced WebRTC implementations with real-time capabilities.
 
-## Main Features
+## Examples Overview
 
-- **Pipecat Extension:** A Pipecat extension to connect with ACE services and NVIDIA NIMs, facilitating the creation of human-avatar interactions. The NVIDIA Pipecat library augments [the Pipecat framework](https://github.com/pipecat-ai/pipecat) by adding additional frame processors and services, as well as new multimodal frames to enhance avatar interactions. This includes the integration of NVIDIA services and NIMs such as [NVIDIA Riva](https://docs.nvidia.com/deeplearning/riva/user-guide/docs/index.html), [NVIDIA Audio2Face](https://build.nvidia.com/nvidia/audio2face-3d), and [NVIDIA Foundational RAG](https://build.nvidia.com/nvidia/build-an-enterprise-rag-pipeline).
+-  **[Voice Agent WebSocket](examples/voice_agent_websocket/)** : A simple voice assistant pipeline using WebSocket-based transport. This example demonstrates integration with NVIDIA LLM Service, Riva ASR and TTS NIMS. 
+- **[Voice Agent WebRTC](examples/voice_agent_webrtc/)** : A more advanced voice agent using WebRTC Transport with real-time transcripts, dynamic prompt configuration and TTS voice selection via UI.
+- **[NAT Agent (NeMo Agent Toolkit)](examples/nat_agent/)** : An end-to-end intelligent voice assistant powered by NeMo Agent Toolkit. The ReWoo agent uses planning-based approach for efficient task decomposition and execution with custom tools for menu browsing, pricing and cart management.
 
-- **HTTP and WebSocket Server Implementation:** The SDK provides a FastAPI-based HTTP and WebSocket server implementation compatible with ACE. It includes functionality for stream and pipeline management by offering new Pipecat pipeline runners and transports. For ease of use and distribution, this functionality is currently included in the `nvidia-pipecat` Python library as well.
+We recommend starting with the Voice Agent WebSocket example for a simple introduction, then progressing to WebRTC-based examples for production use cases. More details on examples can be found in [examples README.md](examples/README.md).
 
-## ACE Controller Microservice
+## NVIDIA Pipecat
 
-The ACE Controller SDK was used to build the [ACE Controller Microservice](https://docs.nvidia.com/ace/ace-controller-microservice/latest/index.html).Check out the [ACE documentation](https://docs.nvidia.com/ace/tokkio/latest/customization/customization-options.html) for more details on how to configure the ACE Controller MS with your custom pipelines.
+The NVIDIA Pipecat library augments [the Pipecat framework](https://github.com/pipecat-ai/pipecat) by adding additional frame processors and NVIDIA services. This includes the integration of NVIDIA services and NIMs such as [Riva ASR](https://build.nvidia.com/nvidia/parakeet-ctc-1_1b-asr), [Riva TTS](https://build.nvidia.com/nvidia/magpie-tts-multilingual), [LLM NIMs](https://build.nvidia.com/models), [NAT (NeMo Agent Toolkit)](https://github.com/NVIDIA/NeMo-Agent-Toolkit), and [Foundational RAG](https://github.com/NVIDIA-AI-Blueprints/rag). It also introduces a few processors with a focus on improving the end-user experience for multimodal conversational agents, along with speculative speech processing to reduce latency for faster bot responses.
 
 
-## Getting Started
+### Getting Started
 
 The NVIDIA Pipecat package is released as a wheel on PyPI. Create a Python virtual environment and use the pip command to install the nvidia-pipecat package.
 
@@ -21,13 +23,13 @@ The NVIDIA Pipecat package is released as a wheel on PyPI. Create a Python virtu
 pip install nvidia-pipecat
 ```
 
-You can start building pipecat pipelines utilizing services from the NVIDIA Pipecat package. For more details, follow [the ACE Controller](https://docs.nvidia.com/ace/ace-controller-microservice/latest/index.html) and [the Pipecat Framework](https://docs.pipecat.ai/getting-started/overview) documentation.
+You can start building pipecat pipelines utilizing services from the NVIDIA Pipecat package.
 
-## Hacking on the framework itself
+### Hacking on the framework itself
 
 If you wish to work directly with the source code or modify services from the nvidia-pipecat package, you can utilize either the UV or Nix development setup as outlined below.
 
-### Using UV
+#### Using UV
 
 
 To get started, first install the [UV package manager](https://docs.astral.sh/uv/#highlights). 
@@ -35,8 +37,8 @@ To get started, first install the [UV package manager](https://docs.astral.sh/uv
 Then, create a virtual environment with all the required dependencies by running the following commands:
 ```bash
 uv venv
-uv sync
 source .venv/bin/activate
+uv sync
 ```
 
 Once the environment is set up, you can begin building pipelines or modifying the services in the source code.
@@ -59,7 +61,7 @@ ruff check
 ```
 
 
-### Using Nix
+#### Using Nix
 
 To set up your development environment using [the Nix](https://nixos.org/download/#nix-install-linux), follow these steps:
 
@@ -75,6 +77,15 @@ To ensure that all checks such as the formatting and linter for the repository a
 ```bash
 nix flake check
 ```
+
+## Documentation
+
+The project documentation includes:
+
+- **[Voice Agent Examples](./examples/README.md)** - Voice agents examples built using pipecat and NVIDIA services
+- **[NVIDIA Pipecat](./docs/NVIDIA_PIPECAT.md)** - Custom Pipecat processors implemented for NVIDIA services
+- **[Best Practices](./docs/BEST_PRACTICES.md)** - Performance optimization guidelines and production deployment strategies
+- **[Speculative Speech Processing](./docs/SPECULATIVE_SPEECH_PROCESSING.md)** - Advanced speech processing techniques for reducing latency
 
 ## CONTRIBUTING
 

@@ -15,9 +15,8 @@ import pytest
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
+    InterruptionFrame,
     StartFrame,
-    StartInterruptionFrame,
-    StopInterruptionFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -418,8 +417,7 @@ class TestRivaASRService(unittest.TestCase):
 
         # Check that frames were pushed (check by type instead of exact equality)
         pushed_frame_types = [type(call[0][0]) for call in service.push_frame.call_args_list]
-        self.assertIn(StartInterruptionFrame, pushed_frame_types, "No StartInterruptionFrame was pushed")
-        self.assertIn(StopInterruptionFrame, pushed_frame_types, "No StopInterruptionFrame was pushed")
+        self.assertIn(InterruptionFrame, pushed_frame_types, "No InterruptionFrame was pushed")
         self.assertIn(UserStartedSpeakingFrame, pushed_frame_types, "No UserStartedSpeakingFrame was pushed")
         self.assertIn(UserStoppedSpeakingFrame, pushed_frame_types, "No UserStoppedSpeakingFrame was pushed")
 

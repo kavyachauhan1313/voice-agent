@@ -1,0 +1,62 @@
+[
+    {
+        "id": 1,
+        "question": "Hi, I'm planning a spring wedding. Can you show me your full menu of available flowers and arrangements?",
+        "answer": "Answer must include the complete menu with all items: Dozen Red Roses ($45.99), Tulip Bouquet ($24.50), Lily Arrangement ($32.75), Sunflower Bundle ($18.25), Mixed Spring Flowers ($28.99), various vases, chocolates, cards, and combo packages like Romance Combo ($65.99), Spring Special ($38.75), Garden Delight ($42.50), Sweet Surprise ($28.99), and Ultimate Birthday Gift Set ($89.99)."
+    },
+    {
+        "id": 2,
+        "question": "What's the current inventory for Dozen Red Roses? I need about 30 stems for an anniversary arrangement.",
+        "answer": "Answer must show that there are 24 Dozen Red Roses in stock, which is less than the requested 30, and inform the customer of the available quantity."
+    },
+    {
+        "id": 3,
+        "question": "How much does a Tulip Bouquet cost? I'm thinking of getting some for my mother's birthday.",
+        "answer": "Answer must provide the exact price of $24.50 for Tulip Bouquet and may include birthday arrangement suggestions."
+    },
+    {
+        "id": 4,
+        "question": "I'd like to add 2 Dozen Red Roses and 1 Crystal Glass Vase to my cart for a romantic dinner setup.",
+        "answer": "Answer must confirm that 2 Dozen Red Roses and 1 Crystal Glass Vase have been successfully added to the cart, showing the total would be $114.97 (2×$45.99 + $22.99)."
+    },
+    {
+        "id": 5,
+        "question": "Actually, I want to remove the Crystal Glass Vase from my cart and just keep the roses.",
+        "answer": "Answer must confirm that the Crystal Glass Vase has been removed from the cart while keeping the Dozen Red Roses."
+    },
+    {
+        "id": 6,
+        "question": "Can you show me what's currently in my cart? I want to review before checkout.",
+        "answer": "Answer must display all items currently in the cart with quantities, individual prices, and total cost based on previous additions and removals."
+    },
+    {
+        "id": 7,
+        "question": "What flowers do you have in stock for a funeral arrangement? I need something white and respectful.",
+        "answer": "Answer must show available white/funeral-appropriate flowers from inventory such as Lily Arrangement (12 in stock at $32.75) and may suggest other respectful options."
+    },
+    {
+        "id": 8,
+        "question": "I want to order the Ultimate Birthday Gift Set. What does it include and can you add it to my cart?",
+        "answer": "Answer must provide details about the Ultimate Birthday Gift Set priced at $89.99, confirm there are 5 in stock, and add it to the cart."
+    },
+    {
+        "id": 9,
+        "question": "I changed my mind about my order. Can you clear everything from my cart so I can start fresh?",
+        "answer": "Answer must confirm that the cart has been completely cleared and is now empty."
+    },
+    {
+        "id": 10,
+        "question": "Do you have Sunflower Bundles available? I'd like to add 3 to my cart.",
+        "answer": "Answer must check that Sunflower Bundles are out of stock (0 available) and inform the customer they cannot fulfill this request, possibly suggesting alternatives."
+    },
+    {
+        "id": 11,
+        "question": "What's the difference in price between the Spring Special and Mixed Spring Flowers? Can you add the cheaper one to my cart?",
+        "answer": "Answer must compare Spring Special ($38.75) vs Mixed Spring Flowers ($28.99), identify Mixed Spring Flowers as cheaper by $9.76, and add it to the cart."
+    },
+    {
+        "id": 12,
+        "question": "I need a romantic setup. What's the price of the Romance Combo and do you have Premium Chocolate Box to go with it?",
+        "answer": "Answer must provide Romance Combo price ($65.99), confirm 10 in stock, show Premium Chocolate Box price ($18.50) with 35 in stock, and suggest adding both for a complete romantic setup totaling $84.49."
+    }
+] 

@@ -11,8 +11,9 @@ Classes:
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
-from pipecat.frames.frames import InterimTranscriptionFrame
+from pipecat.frames.frames import ControlFrame, DataFrame, InterimTranscriptionFrame
 
 
 @dataclass
@@ -67,3 +68,53 @@ class RivaInterimTranscriptionFrame(InterimTranscriptionFrame):
             f"{self.name}(user: {self.user_id}, text: [{self.text}], "
             f"stability: {self.stability}, language: {self.language}, timestamp: {self.timestamp})"
         )
+
+
+@dataclass
+class RivaFetchVoicesFrame(ControlFrame):
+    """Control frame to request TTS service to provide voice information.
+
+    Triggers the TTS service to return available voices, current voice selection,
+    and custom audio prompt status in a single RivaVoicesFrame response.
+    """
+
+
+@dataclass
+class RivaVoicesFrame(DataFrame):
+    """Data frame carrying comprehensive voice information from Riva TTS.
+
+    Consolidates available voices, current selection, and custom audio prompt status
+    into a single frame to reduce communication overhead and simplify UI updates.
+
+    Attributes:
+        available_voices: Dictionary of available voices grouped by language.
+            Format: { "en-US": { "voices": ["Voice.Subvoice", ...] }, ... }
+        current_voice_id: The currently active voice identifier (e.g., "English-US.Female-1")
+        is_zeroshot_model: Whether the active model supports zero-shot voice cloning
+        zero_shot_prompt: Name/path of the active zero-shot audio prompt file. Empty string
+            if no custom prompt is currently active. The UI can check if this is non-empty
+            to determine if a custom zero-shot prompt is in use.
+    """
+
+    available_voices: dict[str, dict[str, list[str]]]
+    current_voice_id: str
+    is_zeroshot_model: bool
+    zero_shot_prompt: str = ""
+
+
+@dataclass
+class RivaTTSUpdateSettingsFrame(ControlFrame):
+    """Control frame to update Riva TTS voice settings.
+
+    Handles both default voice selection and custom zero-shot voice selection.
+
+    Attributes:
+        voice_type: Type of voice - "default" for standard voices, "custom" for zero-shot voices
+        identifier: For default voices, this is the voice_id (e.g., "English-US.Female-1").
+            For custom voices, this is the prompt_id (e.g., "backend" or user-uploaded prompt ID).
+        custom_prompt_path: Optional path to custom voice prompt file (for custom voice type only).
+    """
+
+    voice_type: str  # "default" or "custom"
+    identifier: str
+    custom_prompt_path: Path | None = None

@@ -3,48 +3,60 @@
 
 """Voice Agent WebRTC Pipeline.
 
-This module implements a voice agent pipeline using WebRTC for real-time
-speech-to-speech communication with dynamic prompt support.
+This module sets up a real-time speech-to-speech pipeline using WebRTC,
+enabling interactive voice agents with dynamic UI features like system prompt
+editing and TTS voice switching in real time.
 """
 
 import argparse
 import asyncio
 import json
 import os
+import platform
 import sys
 import uuid
 from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import InputAudioRawFrame, LLMMessagesFrame, TTSAudioRawFrame
+from pipecat.frames.frames import InputAudioRawFrame, TTSAudioRawFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.transports.base_transport import TransportParams
-from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
-from pipecat.transports.network.webrtc_connection import (
+from pipecat.transports.smallwebrtc.connection import (
     IceServer,
     SmallWebRTCConnection,
 )
-from websocket_transcript_output import WebsocketTranscriptOutput
+from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
+from nvidia_pipecat.frames.riva import RivaFetchVoicesFrame
+from nvidia_pipecat.frames.system_prompt import ShowSystemPromptFrame
 from nvidia_pipecat.processors.audio_util import AudioRecorder
 from nvidia_pipecat.processors.nvidia_context_aggregator import (
     NvidiaTTSResponseCacher,
     create_nvidia_context_aggregator,
 )
+from nvidia_pipecat.processors.nvidia_rtvi import NvidiaRTVIInput, NvidiaRTVIOutput
 from nvidia_pipecat.processors.transcript_synchronization import (
     BotTranscriptSynchronization,
     UserTranscriptSynchronization,
 )
 from nvidia_pipecat.services.nvidia_llm import NvidiaLLMService
 from nvidia_pipecat.services.riva_speech import RivaASRService, RivaTTSService
+
+BlingfireTextAggregator = None
+IS_X86 = platform.machine().lower() in ("x86_64", "amd64")
+if IS_X86:
+    try:
+        from nvidia_pipecat.services.blingfire_text_aggregator import BlingfireTextAggregator
+    except ImportError:
+        logger.warning("BlingfireTextAggregator not available on this x86 platform, text aggregation will be disabled")
 
 load_dotenv(override=True)
 
@@ -108,7 +120,6 @@ app.add_middleware(
 
 # Store connections by pc_id
 pcs_map: dict[str, SmallWebRTCConnection] = {}
-contexts_map: dict[str, OpenAILLMContext] = {}
 
 
 ice_servers = (
@@ -124,12 +135,11 @@ ice_servers = (
 )
 
 
-async def run_bot(webrtc_connection, ws: WebSocket):
+async def run_bot(webrtc_connection):
     """Run the voice agent bot with WebRTC connection and WebSocket.
 
     Args:
         webrtc_connection: The WebRTC connection for audio streaming
-        ws: WebSocket connection for communication
     """
     stream_id = uuid.uuid4()
     transport_params = TransportParams(
@@ -150,10 +160,11 @@ async def run_bot(webrtc_connection, ws: WebSocket):
         api_key=os.getenv("NVIDIA_API_KEY"),
         base_url=os.getenv("NVIDIA_LLM_URL", "https://integrate.api.nvidia.com/v1"),
         model=os.getenv("NVIDIA_LLM_MODEL", "meta/llama-3.1-8b-instruct"),
+        text_aggregator=BlingfireTextAggregator() if BlingfireTextAggregator else None,
     )
 
     stt = RivaASRService(
-        server=os.getenv("RIVA_ASR_URL", "localhost:50051"),
+        server=os.getenv("RIVA_ASR_URL", "grpc.nvcf.nvidia.com:443"),
         api_key=os.getenv("NVIDIA_API_KEY"),
         language=os.getenv("RIVA_ASR_LANGUAGE", "en-US"),
         sample_rate=16000,
@@ -176,15 +187,16 @@ async def run_bot(webrtc_connection, ws: WebSocket):
         raise
 
     tts = RivaTTSService(
-        server=os.getenv("RIVA_TTS_URL", "localhost:50051"),
+        server=os.getenv("RIVA_TTS_URL", "grpc.nvcf.nvidia.com:443"),
         api_key=os.getenv("NVIDIA_API_KEY"),
-        voice_id=os.getenv("RIVA_TTS_VOICE_ID", "Magpie-Multilingual.EN-US.Sofia"),
+        voice_id=os.getenv("RIVA_TTS_VOICE_ID", "Magpie-Multilingual.EN-US.Aria"),
         model=os.getenv("RIVA_TTS_MODEL", "magpie_tts_ensemble-Magpie-Multilingual"),
         language=os.getenv("RIVA_TTS_LANGUAGE", "en-US"),
         zero_shot_audio_prompt_file=(
             Path(os.getenv("ZERO_SHOT_AUDIO_PROMPT")) if os.getenv("ZERO_SHOT_AUDIO_PROMPT") else None
         ),
-        ipa_dict=ipa_dict,
+        custom_dictionary=ipa_dict,
+        text_aggregator=BlingfireTextAggregator() if BlingfireTextAggregator else None,
     )
 
     # Create audio_dumps directory if it doesn't exist
@@ -211,10 +223,6 @@ async def run_bot(webrtc_connection, ws: WebSocket):
 
     context = OpenAILLMContext(messages)
 
-    # Store context globally so WebSocket can access it
-    pc_id = webrtc_connection.pc_id
-    contexts_map[pc_id] = context
-
     # Configure speculative speech processing based on environment variable
     enable_speculative_speech = os.getenv("ENABLE_SPECULATIVE_SPEECH", "true").lower() == "true"
 
@@ -225,11 +233,17 @@ async def run_bot(webrtc_connection, ws: WebSocket):
         context_aggregator = llm.create_context_aggregator(context)
         tts_response_cacher = None
 
-    transcript_processor_output = WebsocketTranscriptOutput(ws)
+    # Create NVIDIA RTVI input processor with application-specific message handlers
+    rtvi_input = NvidiaRTVIInput(
+        transport=transport,
+        context=context,
+    )
+    rtvi_output = NvidiaRTVIOutput(rtvi_input)
 
     pipeline = Pipeline(
         [
-            transport.input(),  # Websocket input from client
+            transport.input(),  # WebRTC input from client
+            rtvi_input,  # NVIDIA RTVI input processor with Client-specific message handlers
             asr_recorder,
             stt,  # Speech-To-Text
             stt_transcript_synchronization,
@@ -237,10 +251,10 @@ async def run_bot(webrtc_connection, ws: WebSocket):
             llm,  # LLM
             tts,  # Text-To-Speech
             tts_recorder,
-            *([tts_response_cacher] if tts_response_cacher else []),  # Include cacher only if enabled
+            *([tts_response_cacher] if tts_response_cacher else []),
             tts_transcript_synchronization,
-            transcript_processor_output,
-            transport.output(),  # Websocket output to client
+            rtvi_output,  # NVIDIA RTVI output processor for passing Client-specific frames for consumption
+            transport.output(),  # WebRTC output to client
             context_aggregator.assistant(),
         ]
     )
@@ -256,90 +270,52 @@ async def run_bot(webrtc_connection, ws: WebSocket):
         ),
     )
 
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        # Wait 50ms for custom prompt from UI before starting conversation
-        await asyncio.sleep(0.05)
-        # Kick off the conversation.
-        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
-        await task.queue_frames([LLMMessagesFrame(messages)])
+    @webrtc_connection.event_handler("connected")
+    async def on_connection_established(connection):
+        # Wait for data channel to be open before sending frames
+        for _ in range(50):  # 5 seconds max
+            if connection._data_channel and connection._data_channel.readyState == "open":
+                await task.queue_frames([RivaFetchVoicesFrame()])
+                await task.queue_frames([ShowSystemPromptFrame(prompt=FLORA_SYSTEM_PROMPT)])
+                break
+            await asyncio.sleep(0.1)
 
     runner = PipelineRunner(handle_sigint=False)
 
     await runner.run(task)
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for handling voice agent connections.
+@app.post("/offer")
+async def offer(request: Request):
+    """Offer endpoint for handling voice agent connections.
 
     Args:
-        websocket: The WebSocket connection to handle
+        request: The request to handle
     """
-    await websocket.accept()
-    try:
-        request = await websocket.receive_json()
-        pc_id = request.get("pc_id")
+    request = await request.json()
+    pc_id = request.get("pc_id")
 
-        if pc_id and pc_id in pcs_map:
-            pipecat_connection = pcs_map[pc_id]
-            logger.info(f"Reusing existing connection for pc_id: {pc_id}")
-            await pipecat_connection.renegotiate(sdp=request["sdp"], type=request["type"])
-        else:
-            pipecat_connection = SmallWebRTCConnection(ice_servers)
-            await pipecat_connection.initialize(sdp=request["sdp"], type=request["type"])
+    if pc_id and pc_id in pcs_map:
+        pipecat_connection = pcs_map[pc_id]
+        logger.info(f"Reusing existing connection for pc_id: {pc_id}")
+        await pipecat_connection.renegotiate(sdp=request["sdp"], type=request["type"])
+    else:
+        pipecat_connection = SmallWebRTCConnection(ice_servers)
+        await pipecat_connection.initialize(sdp=request["sdp"], type=request["type"])
 
-            @pipecat_connection.event_handler("closed")
-            async def handle_disconnected(webrtc_connection: SmallWebRTCConnection):
-                logger.info(f"Discarding peer connection for pc_id: {webrtc_connection.pc_id}")
-                pcs_map.pop(webrtc_connection.pc_id, None)  # Remove connection reference
-                contexts_map.pop(webrtc_connection.pc_id, None)  # Remove context reference
+        @pipecat_connection.event_handler("closed")
+        async def handle_disconnected(webrtc_connection: SmallWebRTCConnection):
+            pc_id = webrtc_connection.pc_id
 
-            asyncio.create_task(run_bot(pipecat_connection, websocket))
+            # Remove from connections map
+            pcs_map.pop(pc_id, None)
 
-        answer = pipecat_connection.get_answer()
-        pcs_map[answer["pc_id"]] = pipecat_connection
+        asyncio.create_task(run_bot(pipecat_connection))
 
-        await websocket.send_json(answer)
+    answer = pipecat_connection.get_answer()
+    pcs_map[answer["pc_id"]] = pipecat_connection
 
-        # Keep the connection open and print text messages
-        while True:
-            try:
-                message = await websocket.receive_text()
-                # Parse JSON message from UI
-                try:
-                    data = json.loads(message)
-                    message = data.get("message", "").strip()
-                    if data.get("type") == "context_reset" and message:
-                        print(f"Received context reset from UI: {message}")
-                        logger.info(f"Context reset from UI: {message}")
-
-                        # Replace entire conversation context with new system prompt
-                        pc_id = pipecat_connection.pc_id
-                        if pc_id in contexts_map:
-                            context = contexts_map[pc_id]
-                            context.set_messages([{"role": "system", "content": message}])
-                        else:
-                            print(f"No context found for pc_id: {pc_id}")
-
-                except json.JSONDecodeError:
-                    print(f"Non-JSON message: {message}")
-            except Exception as e:
-                logger.error(f"Error processing message: {e}")
-                break
-
-    except WebSocketDisconnect:
-        logger.info("Client disconnected from websocket")
-
-
-@app.get("/get_prompt")
-async def get_prompt():
-    """Get the default system prompt."""
-    return {
-        "prompt": FLORA_SYSTEM_PROMPT,
-        "name": "System Prompt",
-        "description": "Default system prompt for the System as set at the backend",
-    }
+    return answer
 
 
 if __name__ == "__main__":
