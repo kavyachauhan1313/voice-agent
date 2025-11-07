@@ -26,7 +26,7 @@ from pipecat.frames.frames import (
     LLMMessagesFrame,
     StartInterruptionFrame,
     TextFrame,
-    VisionImageRawFrame,
+    UserImageRawFrame,
 )
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext, OpenAILLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection
@@ -332,9 +332,14 @@ class NvidiaRAGService(OpenAILLMService):
             context: OpenAILLMContext = frame.context
         elif isinstance(frame, LLMMessagesFrame):
             context = OpenAILLMContext.from_messages(frame.messages)
-        elif isinstance(frame, VisionImageRawFrame):
+        elif isinstance(frame, UserImageRawFrame):
             context = OpenAILLMContext()
-            context.add_image_frame_message(format=frame.format, size=frame.size, image=frame.image, text=frame.text)
+            context.add_image_frame_message(
+                format=frame.format,
+                size=frame.size,
+                image=frame.image,
+                text=getattr(frame, "text", None),
+            )
         elif isinstance(frame, StartInterruptionFrame):
             if self._current_task is not None:
                 await self.cancel_task(self._current_task)

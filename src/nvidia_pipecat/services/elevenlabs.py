@@ -17,10 +17,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, calculate_word_times
 
-from nvidia_pipecat.utils.tracing import AttachmentStrategy, traceable, traced
 
-
-@traceable
 class ElevenLabsTTSServiceWithEndOfSpeech(ElevenLabsTTSService):
     """ElevenLabs TTS service with end-of-speech detection.
 
@@ -80,7 +77,6 @@ class ElevenLabsTTSServiceWithEndOfSpeech(ElevenLabsTTSService):
             await self._websocket.send(json.dumps(msg))
             self._context_id = None
 
-    @traced(attachment_strategy=AttachmentStrategy.NONE, name="tts")
     async def run_tts(self, text: str):
         """Run text-to-speech synthesis.
 

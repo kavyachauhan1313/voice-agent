@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from fastapi import WebSocket
 from loguru import logger
+from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -188,8 +189,10 @@ class ACEPipelineRunner:
         """
         try:
             self._pipelines[stream_id].pipeline_task = await self._pipelines_callback(self._pipelines[stream_id])
-            self._pipelines[stream_id].pipeline_task.set_event_loop(asyncio.get_event_loop())
-            self._pipelines[stream_id].runner_task = asyncio.create_task(self._pipelines[stream_id].pipeline_task.run())
+            runner = PipelineRunner(handle_sigint=False)
+            self._pipelines[stream_id].runner_task = asyncio.create_task(
+                runner.run(self._pipelines[stream_id].pipeline_task)
+            )
             self._pipelines[stream_id].runner_task.add_done_callback(
                 lambda _: asyncio.create_task(self._cleanup_pipeline(stream_id))
             )

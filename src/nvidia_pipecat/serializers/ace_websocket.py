@@ -34,6 +34,7 @@ from pipecat.serializers.base_serializer import (
     FrameSerializerType,
 )
 
+from nvidia_pipecat.frames.riva import RivaVoicesFrame
 from nvidia_pipecat.frames.transcripts import (
     BotUpdatedSpeakingTranscriptFrame,
     UserStoppedSpeakingTranscriptFrame,
@@ -97,6 +98,14 @@ class ACEWebSocketSerializer(FrameSerializer):
             message = {"type": "asr_update", "asr": frame.transcript}
         if isinstance(frame, UserStoppedSpeakingTranscriptFrame):
             message = {"type": "asr_end", "asr": frame.transcript}
+        if isinstance(frame, RivaVoicesFrame):
+            message = {
+                "type": "riva_voices",
+                "available_voices": frame.available_voices,
+                "current_voice_id": frame.current_voice_id,
+                "is_zeroshot_model": frame.is_zeroshot_model,
+                "zero_shot_prompt": frame.zero_shot_prompt,
+            }
 
         if message:
             return json.dumps(message)

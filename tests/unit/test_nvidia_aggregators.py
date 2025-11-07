@@ -5,6 +5,7 @@
 
 import pytest
 from pipecat.frames.frames import (
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMMessagesFrame,
@@ -67,13 +68,14 @@ async def test_normal_flow():
     )
     expected_down_frames = [
         UserStartedSpeakingFrame,
+        InterruptionFrame,
+        InterruptionFrame,
         LLMMessagesFrame,
         OpenAILLMContextFrame,  # From first interim
-        OpenAILLMContextFrame,  # From first final
+        OpenAILLMContextFrame,  # From final transcription
         UserStoppedSpeakingFrame,
-        OpenAILLMContextFrame,
+        OpenAILLMContextFrame,  # From assistant response
     ]
-
     await run_pipecat_test(
         pipeline,
         frames_to_send=frames_to_send,
@@ -136,10 +138,12 @@ async def test_user_speaking_frame_delay_cases():
     )
     expected_down_frames = [
         UserStartedSpeakingFrame,
+        InterruptionFrame,
+        InterruptionFrame,
         OpenAILLMContextFrame,  # from first interim after UserStartedSpeakingFrame
-        OpenAILLMContextFrame,  # From first final after UserStartedSpeakingFrame
+        OpenAILLMContextFrame,  # from final transcription
         UserStoppedSpeakingFrame,
-        OpenAILLMContextFrame,
+        OpenAILLMContextFrame,  # From assistant response
     ]
 
     await run_pipecat_test(
@@ -197,12 +201,16 @@ async def test_multiple_interims_with_final_transcription():
     )
     expected_down_frames = [
         UserStartedSpeakingFrame,
-        OpenAILLMContextFrame,  # from first interim
-        OpenAILLMContextFrame,  # From second interim
-        OpenAILLMContextFrame,  # From third interim
+        InterruptionFrame,
+        InterruptionFrame,
+        InterruptionFrame,
+        InterruptionFrame,
+        OpenAILLMContextFrame,  # From interim 1
+        OpenAILLMContextFrame,  # From interim 2
+        OpenAILLMContextFrame,  # From interim 3
         OpenAILLMContextFrame,  # From final transcription
         UserStoppedSpeakingFrame,
-        OpenAILLMContextFrame,
+        OpenAILLMContextFrame,  # From assistant response
     ]
 
     await run_pipecat_test(
@@ -259,8 +267,10 @@ async def test_transcription_after_user_stopped_speaking():
 
     expected_down_frames = [
         UserStartedSpeakingFrame,
+        InterruptionFrame,
         OpenAILLMContextFrame,  # From first interim
         UserStoppedSpeakingFrame,
+        InterruptionFrame,
         OpenAILLMContextFrame,  # From final after UserStoppedSpeakingFrame
         OpenAILLMContextFrame,  # From assistant response
     ]
@@ -316,6 +326,7 @@ async def test_no_interim_frames():
 
     expected_down_frames = [
         UserStartedSpeakingFrame,
+        InterruptionFrame,
         LLMMessagesFrame,
         OpenAILLMContextFrame,  # Only from final transcription
         UserStoppedSpeakingFrame,

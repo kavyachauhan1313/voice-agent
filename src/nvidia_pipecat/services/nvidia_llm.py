@@ -4,7 +4,9 @@
 """NVIDIA LLM service implementation for interacting with NIM (NVIDIA Inference Microservice) API."""
 
 import json
+import time
 
+import blingfire as bf
 import httpx
 from loguru import logger
 from openai import AsyncStream
@@ -18,13 +20,16 @@ from pipecat.frames.frames import (
     LLMMessagesFrame,
     LLMTextFrame,
     StartInterruptionFrame,
-    VisionImageRawFrame,
+    UserImageRawFrame,
 )
 from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext, OpenAILLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection
-from pipecat.services.openai.base_llm import OpenAIUnhandledFunctionException
 from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.utils.string import match_endofsentence
+from pipecat.utils.text.base_text_aggregator import BaseTextAggregator
+
+from nvidia_pipecat.services.blingfire_text_aggregator import BlingfireTextAggregator, normalize
 
 
 class NvidiaLLMService(OpenAILLMService):
@@ -56,6 +61,7 @@ class NvidiaLLMService(OpenAILLMService):
         model: str = "meta/llama3-8b-instruct",
         filter_think_tokens: bool = False,  # Only enable if model produces thinking tokens with </think> tags
         mistral_model_support: bool = False,  # Enable for Mistral models requiring user/assistant alternation
+        text_aggregator: BaseTextAggregator | None = None,
         **kwargs,
     ):
         """Initialize the NvidiaLLMService with configuration parameters."""
@@ -69,9 +75,14 @@ class NvidiaLLMService(OpenAILLMService):
         self._filter_think_tokens = filter_think_tokens
         self._mistral_model_support = mistral_model_support
         self._current_task = None
+        self._text_aggregator = text_aggregator
 
         # State for think token filtering
         self._reset_think_filter_state()
+
+        # State for first sentence generation timing
+        self._first_sentence_detected = False
+        self._first_sentence_start_time = None
 
     def _reset_think_filter_state(self):
         """Reset the state variables used for think token filtering."""
@@ -182,7 +193,11 @@ class NvidiaLLMService(OpenAILLMService):
         try:
             await self.start_ttfb_metrics()
 
-            chunk_stream: AsyncStream[ChatCompletionChunk] = await self._stream_chat_completions(context)
+            # Pipecat 0.0.85 provides specific/universal streaming methods
+            # Use the specific OpenAI context variant here
+            chunk_stream: AsyncStream[ChatCompletionChunk] = await self._stream_chat_completions_specific_context(
+                context
+            )
 
             async for chunk in chunk_stream:
                 if chunk.usage:
@@ -236,6 +251,22 @@ class NvidiaLLMService(OpenAILLMService):
                     else:
                         await self.push_frame(LLMTextFrame(content))
 
+                        # Check for first sentence completion using configured aggregator or default matcher
+                        if content and not self._first_sentence_detected:
+                            if self._text_aggregator is None:
+                                end_of_sentence_pos = match_endofsentence(content)
+                                if end_of_sentence_pos > 0:
+                                    self._first_sentence_detected = True
+                            elif isinstance(self._text_aggregator, BlingfireTextAggregator):
+                                await self._text_aggregator.aggregate(content)
+                                normalized_text = normalize(self._text_aggregator.text)
+                                sentences_text = bf.text_to_sentences(normalized_text)
+                                sentences = [s.strip() for s in sentences_text.split("\n") if s.strip()]
+                                self._first_sentence_detected = len(sentences) >= 1
+                            if self._first_sentence_detected:
+                                first_sentence_time = time.time() - self._first_sentence_start_time
+                                logger.debug(f"{self} LLM first sentence generation time: {first_sentence_time:.3f}")
+
             # Process any remaining content in buffers
             if self._filter_think_tokens and not self._seen_end_tag and self._thinking_aggregation:
                 # No </think> tag was ever seen even after enabling filtering thinking tokens,
@@ -256,7 +287,7 @@ class NvidiaLLMService(OpenAILLMService):
                 for _index, (function_name, arguments, tool_id) in enumerate(
                     zip(functions_list, arguments_list, tool_id_list, strict=False), start=1
                 ):
-                    if self.has_function(function_name):
+                    if await self.has_function(function_name):
                         run_llm = False
                         arguments = json.loads(arguments)
                         await self.call_function(
@@ -267,7 +298,7 @@ class NvidiaLLMService(OpenAILLMService):
                             run_llm=run_llm,
                         )
                     else:
-                        raise OpenAIUnhandledFunctionException(
+                        raise Exception(
                             f"The LLM tried to call a function named '{function_name}', "
                             f"but there isn't a callback registered for that function."
                         )
@@ -373,6 +404,9 @@ class NvidiaLLMService(OpenAILLMService):
         """Process context and handle start/end frames with metrics."""
         try:
             await self.push_frame(LLMFullResponseStartFrame())
+            # Start first sentence timing
+            self._first_sentence_detected = False
+            self._first_sentence_start_time = time.time()
             await self.start_processing_metrics()
             await self._process_context(context)
         except httpx.TimeoutException:
@@ -389,9 +423,14 @@ class NvidiaLLMService(OpenAILLMService):
             context: OpenAILLMContext = frame.context
         elif isinstance(frame, LLMMessagesFrame):
             context = OpenAILLMContext.from_messages(frame.messages)
-        elif isinstance(frame, VisionImageRawFrame):
+        elif isinstance(frame, UserImageRawFrame):
             context = OpenAILLMContext()
-            context.add_image_frame_message(format=frame.format, size=frame.size, image=frame.image, text=frame.text)
+            context.add_image_frame_message(
+                format=frame.format,
+                size=frame.size,
+                image=frame.image,
+                text=getattr(frame, "text", None),
+            )
         elif isinstance(frame, StartInterruptionFrame):
             await self._start_interruption()
             await self.stop_all_metrics()
@@ -406,8 +445,8 @@ class NvidiaLLMService(OpenAILLMService):
             if self._current_task is not None and not self._current_task.done():
                 await self.cancel_task(self._current_task)
                 self._current_task = None
-                logger.debug("Old Nvidia LLM task terminated")
+                logger.trace("Old Nvidia LLM task terminated")
             self._current_task = self.create_task(self._process_context_and_frames(context))
-            logger.debug("New Nvidia LLM task created")
+            logger.trace("New Nvidia LLM task created")
 
             self._current_task.add_done_callback(lambda _: setattr(self, "_current_task", None))

@@ -21,7 +21,6 @@ import av.logging
 from av.audio.resampler import AudioResampler
 from loguru import logger
 from pipecat.frames.frames import (
-    AudioRawFrame,
     CancelFrame,
     EndFrame,
     FatalErrorFrame,
@@ -39,7 +38,7 @@ from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
-from pipecat.transports.network.fastapi_websocket import (
+from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketCallbacks,
 )
 
@@ -72,7 +71,7 @@ class ACETransportParams(TransportParams):
         rtsp_transport: Transport protocol (tcp/udp).
         rtsp_max_delay: Buffer delay in microseconds.
         audio_in_enabled: Enable audio input.
-        camera_in_enabled: Enable camera input.
+        camera_in_enabled: Enable/Disable camera input
         audio_out_enabled: Enable audio output.
         audio_out_sample_rate: Output sample rate in Hz.
         audio_in_encoding: Input audio encoding format.
@@ -558,8 +557,14 @@ class ACEOutputTransport(BaseOutputTransport):
         if isinstance(frame, StartInterruptionFrame):
             self._next_send_time = 0
             self._total_sent_interval = 0
-        if not isinstance(frame, AudioRawFrame | TransportMessageFrame | TransportMessageUrgentFrame):
-            await self._write_frame(frame)
+
+        # Handle audio frames produced by the pipeline (pipecat >= 0.0.85)
+        if isinstance(frame, OutputAudioRawFrame):
+            await self.write_raw_audio_frames(frame.audio)
+            return
+
+        # Send all other frames (text, transcription, control, messages)
+        await self._write_frame(frame)
 
     async def send_message(self, frame: TransportMessageFrame | TransportMessageUrgentFrame):
         """Send a transport message frame through the WebSocket.
@@ -591,8 +596,7 @@ class ACEOutputTransport(BaseOutputTransport):
             return
 
         if not self._client.is_connected:
-            # Simulate audio playback with a sleep.
-            await self._write_audio_sleep()
+            # If the client is not connected, skip sending/sleeping to avoid timing drift.
             return
 
         frame = OutputAudioRawFrame(
@@ -600,6 +604,12 @@ class ACEOutputTransport(BaseOutputTransport):
             sample_rate=self.sample_rate,
             num_channels=self._params.audio_out_channels,
         )
+
+        # Compute the duration of this PCM chunk before any header wrapping
+        # duration (seconds) = samples / sample_rate = (bytes / (2 * channels)) / sample_rate
+        bytes_per_sample = 2
+        channels = self._params.audio_out_channels
+        frame_duration_sec = max(0.0, len(frames) / float(bytes_per_sample * channels * self.sample_rate))
 
         if self._params.add_wav_header:
             with io.BytesIO() as buffer:
@@ -617,14 +627,14 @@ class ACEOutputTransport(BaseOutputTransport):
 
         await self._write_frame(frame)
 
-        # To avoid the audio breaks/glitches during playback, we want to send
-        # the audio data in burst mode initially for some duration
-        # and then sleep to simulate the audio playback. This will ensure
-        # that there is some audio data always in the buffer and it is never empty.
+        # To avoid audio glitches, initially send without sleeping (burst),
+        # then sleep based on the actual frame duration.
         if self._total_sent_interval >= self._params.burst_mode_duration:
-            # Simulate audio playback with a sleep.
+            # Sleep for the duration corresponding to this chunk
+            # Reuse the common sleep helper by updating the interval dynamically.
+            self._send_interval = frame_duration_sec
             await self._write_audio_sleep()
-        self._total_sent_interval += self._send_interval
+        self._total_sent_interval += frame_duration_sec
 
     async def _write_frame(self, frame: Frame):
         try:

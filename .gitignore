@@ -28,3 +28,9 @@ docs/build/
 
 # Ignore .DS_Store
 .DS_Store
+
+*.log
+nim_cache/
+riva_cache/
+llm_cache/
+audio_dumps/

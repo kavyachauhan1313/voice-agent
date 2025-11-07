@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD 2-Clause License
 
-"""User presence detection and greeting processor for ACE conversation pipeline."""
+"""User presence detection and greeting processor for conversation pipeline."""
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -19,7 +19,7 @@ from nvidia_pipecat.frames.action import FinishedPresenceUserActionFrame, Starte
 
 
 class UserPresenceProcesssor(FrameProcessor):
-    """Manages user presence detection and automated greetings in the ACE conversation pipeline.
+    """Manages user presence detection and automated greetings in the conversation pipeline.
 
     Manages automated greetings and pipeline activation based on user presence state.
     Sends welcome/farewell messages and controls frame forwarding accordingly.

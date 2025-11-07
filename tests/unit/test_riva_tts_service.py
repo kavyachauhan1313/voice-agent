@@ -8,6 +8,7 @@ TTS frame generation, audio frame handling, and integration tests.
 """
 
 import asyncio
+import re
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -77,6 +78,75 @@ class TestRivaTTSService(unittest.TestCase):
             self.assertIsInstance(frames[3], TTSStoppedFrame)
 
         # Run the async test
+        asyncio.run(run_test())
+
+    @patch("nvidia_pipecat.services.riva_speech.riva.client.Auth")
+    @patch("nvidia_pipecat.services.riva_speech.riva.client.SpeechSynthesisService")
+    def test_long_text_is_chunked_before_synthesis(self, mock_speech_service, mock_auth):
+        """Ensure long text is split into <=200-char chunks before synthesize_online.
+
+        Verifies:
+        - synthesize_online is called once per chunk
+        - each text arg length <= 200
+        - no leading or trailing whitespace in each chunk
+        - no non-whitespace characters are lost across chunking
+        - number of yielded audio frames equals number of synthesize calls
+        """
+        # Arrange
+        mock_service_instance = MagicMock()
+        mock_speech_service.return_value = mock_service_instance
+
+        # Return one audio frame per synthesize call
+        def _synth_response():
+            return [TTSAudioRawFrame(audio=b"x", sample_rate=16000, num_channels=1)]
+
+        mock_service_instance.synthesize_online.side_effect = lambda *args, **kwargs: _synth_response()
+
+        service = RivaTTSService(api_key="test_api_key")
+        service._service = mock_service_instance
+
+        # Build long text exercising both whitespace splits and hard splits (no whitespace region)
+        no_space_block = "A" * 210  # forces a hard split
+        long_text = (
+            "This is a long text intended to be chunked properly across whitespace boundaries. "
+            + ("lorem ipsum " * 20)
+            + no_space_block
+            + " end."
+        )
+
+        # Act
+        async def run_test():
+            frames = []
+            async for frame in service.run_tts(long_text):
+                frames.append(frame)
+
+            # Assert: call count and per-chunk invariants
+            call_args = mock_service_instance.synthesize_online.call_args_list
+            assert len(call_args) > 1  # should have chunked
+
+            # Each call's first positional arg is the text chunk
+            chunk_texts = [c.args[0] for c in call_args]
+
+            # Length and whitespace boundaries
+            for chunk in chunk_texts:
+                assert len(chunk) <= 200
+                assert not chunk.startswith(" ") and not chunk.endswith(" ")
+
+            # No non-whitespace character loss across chunking
+            original_compact = re.sub(r"\s+", "", long_text)
+            reconstructed_compact = re.sub(r"\s+", "", "".join(chunk_texts))
+            assert original_compact == reconstructed_compact
+
+            # One audio frame per call
+            audio_frames = [f for f in frames if isinstance(f, TTSAudioRawFrame)]
+            assert len(audio_frames) == len(call_args)
+
+            # Frame envelope
+            assert isinstance(frames[0], TTSStartedFrame)
+            assert isinstance(frames[1], TTSTextFrame)
+            assert frames[1].text == long_text
+            assert isinstance(frames[-1], TTSStoppedFrame)
+
         asyncio.run(run_test())
 
     @patch("nvidia_pipecat.services.riva_speech.riva.client.Auth")
@@ -199,7 +269,7 @@ class TestRivaTTSService(unittest.TestCase):
             None,
             True,  # use_ssl=True
             test_server,
-            [["function-id", "0149dedb-2be8-4195-b9a0-e57e0e14f972"], ["authorization", f"Bearer {test_api_key}"]],
+            [["function-id", "877104f7-e885-42b9-8de8-f6e4c6303969"], ["authorization", f"Bearer {test_api_key}"]],
         )
 
     @patch("nvidia_pipecat.services.riva_speech.riva.client.Auth")

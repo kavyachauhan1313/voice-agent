@@ -33,9 +33,9 @@ from dataclasses import dataclass
 from loguru import logger
 from pipecat.frames.frames import (
     Frame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
-    StartInterruptionFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
@@ -72,7 +72,7 @@ class NvidiaAssistantContextAggregator(LLMAssistantContextAggregator):
         LLMFullResponseStartFrame: Marks response start
         LLMFullResponseEndFrame: Marks response end
         TextFrame: Contains response text
-        StartInterruptionFrame: Signals interruption
+        InterruptionFrame: Signals interruption
 
     Output Frames:
         OpenAILLMContextFrame: Updated context with responses
@@ -110,7 +110,7 @@ class NvidiaAssistantContextAggregator(LLMAssistantContextAggregator):
             frame = OpenAILLMContextFrame(self.context)
             await self.push_frame(frame)
             # Reset our accumulator state.
-            self.reset()
+            await self.reset()
 
 
 class NvidiaUserContextAggregator(LLMUserContextAggregator):
@@ -129,7 +129,7 @@ class NvidiaUserContextAggregator(LLMUserContextAggregator):
         RivaInterimTranscriptionFrame: Interim transcription
         UserStartedSpeakingFrame: User began speaking
         UserStoppedSpeakingFrame: User stopped speaking
-        StartInterruptionFrame: Conversation interruption
+        InterruptionFrame: Conversation interruption
 
     Output Frames:
         OpenAILLMContextFrame: Updated context with transcripts
@@ -197,7 +197,7 @@ class NvidiaUserContextAggregator(LLMUserContextAggregator):
                 self._aggregation = frame.text
                 await self.push_aggregation()
                 self.last_transcript = frame.text
-        elif isinstance(frame, StartInterruptionFrame):
+        elif isinstance(frame, InterruptionFrame):
             self._user_speaking = False
             await self._start_interruption()
             await self.stop_all_metrics()
@@ -293,10 +293,14 @@ class NvidiaUserContextAggregator(LLMUserContextAggregator):
             # Get truncated context and send downstream
             truncated_context = await self.get_truncated_context()
             frame = OpenAILLMContextFrame(truncated_context)
-            print(frame.context.get_messages())
+            # Send the interruption before the context frame
+            await self.push_frame(InterruptionFrame())
+            logger.debug(
+                f"Sending context downstream to LLM from NvidiaUserContextAggregator {frame.context.get_messages()}"
+            )
             await self.push_frame(frame)
             # Reset our accumulator state
-            self.reset()
+            await self.reset()
 
 
 class NvidiaTTSResponseCacher(FrameProcessor):
@@ -315,7 +319,7 @@ class NvidiaTTSResponseCacher(FrameProcessor):
         - TTSTextFrame: TTS text data
         - UserStartedSpeakingFrame: Triggers caching
         - UserStoppedSpeakingFrame: Triggers release
-        - StartInterruptionFrame: Clears cache
+        - InterruptionFrame: Clears cache
     """
 
     def __init__(self) -> None:
@@ -374,12 +378,12 @@ class NvidiaTTSResponseCacher(FrameProcessor):
             self._cache.append(frame)
 
         # Handle interruptions - clear cache and reset state
-        elif isinstance(frame, StartInterruptionFrame | StartedPresenceUserActionFrame):
+        elif isinstance(frame, InterruptionFrame | StartedPresenceUserActionFrame):
             # TODO: This only works if we have a single user in the system.
             # it also does not work if other "events" should trigger the cache release
             # (e.g. new frames by new processors).
             self._cache.clear()
-            self.user_stopped_speaking = True
+            # self.user_stopped_speaking = True
             await self.push_frame(frame, direction)
 
         # Handle user stop speaking - release cached responses

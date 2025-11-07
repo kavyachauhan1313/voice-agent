@@ -161,7 +161,7 @@ async def test_elevenlabs_tts_service_with_end_of_speech():
         # mock = AsyncMock()
         # mock.return_value = mock_websocket
 
-        with patch("pipecat.services.elevenlabs.tts.websockets.connect", new=AsyncMock()) as mock:
+        with patch("pipecat.services.elevenlabs.tts.websocket_connect", new=AsyncMock()) as mock:
             mock.return_value = mock_websocket
             tts_service = ElevenLabsTTSServiceWithEndOfSpeech(
                 api_key="test_api_key", voice_id="test_voice_id", sample_rate=16000, channels=1
@@ -176,7 +176,6 @@ async def test_elevenlabs_tts_service_with_end_of_speech():
                 # Wait for all expected frames
                 for expected_frame in test_data["expected_frames"]:
                     await s.wait_for_frame(ignore_ids(expected_frame))
-                    print(f"got frame to be sent {expected_frame}")
 
                 # TODO: investigate why we need to cancel here
                 await task.cancel()

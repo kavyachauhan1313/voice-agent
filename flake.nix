@@ -1,5 +1,5 @@
 {
-  description = "NVIDIA ACE Pipecat SDK";
+  description = "NVIDIA Pipecat SDK";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -92,6 +92,7 @@
                 editables = [];
               };
           });
+          rapidfuzz = pkgs.python312Packages.rapidfuzz;
         };
 
         # Use Python 3.12 from nixpkgs
