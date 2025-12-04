@@ -4,9 +4,9 @@
 """NVIDIA LLM service implementation for interacting with NIM (NVIDIA Inference Microservice) API."""
 
 import json
+import platform
 import time
 
-import blingfire as bf
 import httpx
 from loguru import logger
 from openai import AsyncStream
@@ -29,7 +29,13 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.utils.string import match_endofsentence
 from pipecat.utils.text.base_text_aggregator import BaseTextAggregator
 
-from nvidia_pipecat.services.blingfire_text_aggregator import BlingfireTextAggregator, normalize
+BlingfireTextAggregator = None
+IS_X86 = platform.machine().lower() in ("x86_64", "amd64")
+if IS_X86:
+    try:
+        from nvidia_pipecat.services.blingfire_text_aggregator import BlingfireTextAggregator
+    except ImportError:
+        logger.warning("BlingfireTextAggregator not available on this x86 platform, text aggregation will be disabled")
 
 
 class NvidiaLLMService(OpenAILLMService):
@@ -257,12 +263,14 @@ class NvidiaLLMService(OpenAILLMService):
                                 end_of_sentence_pos = match_endofsentence(content)
                                 if end_of_sentence_pos > 0:
                                     self._first_sentence_detected = True
-                            elif isinstance(self._text_aggregator, BlingfireTextAggregator):
-                                await self._text_aggregator.aggregate(content)
-                                normalized_text = normalize(self._text_aggregator.text)
-                                sentences_text = bf.text_to_sentences(normalized_text)
-                                sentences = [s.strip() for s in sentences_text.split("\n") if s.strip()]
-                                self._first_sentence_detected = len(sentences) >= 1
+                            elif BlingfireTextAggregator and isinstance(self._text_aggregator, BlingfireTextAggregator):
+                                # Blingfire's aggregate() which returns a complete sentence ONLY when
+                                # it detects multiple sentences (i.e., when it sees the start of the 2nd sentence)
+                                # This ensures we're measuring when the FIRST sentence is truly complete
+                                complete_sentence = await self._text_aggregator.aggregate(content)
+                                if complete_sentence:
+                                    self._first_sentence_detected = True
+
                             if self._first_sentence_detected:
                                 first_sentence_time = time.time() - self._first_sentence_start_time
                                 logger.debug(f"{self} LLM first sentence generation time: {first_sentence_time:.3f}")
@@ -413,6 +421,13 @@ class NvidiaLLMService(OpenAILLMService):
             await self._call_event_handler("on_completion_timeout")
         finally:
             await self.stop_processing_metrics()
+
+            # Fallback: if first sentence was never detected during streaming (single-sentence response),
+            # the first sentence time equals the full processing time
+            if not self._filter_think_tokens and not self._first_sentence_detected:
+                processing_time = time.time() - self._first_sentence_start_time
+                logger.debug(f"{self} LLM first sentence generation time: {processing_time:.3f}")
+
             await self.push_frame(LLMFullResponseEndFrame())
         return
 
