@@ -26,7 +26,6 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
-    InterruptionFrame,
     StartFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
@@ -180,6 +179,8 @@ class RivaTTSService(TTSService):
         - RivaTTSUpdateSettingsFrame: Update voice settings (default or custom voice).
         - Any other frame: Delegate to the base TTSService implementation.
         """
+        await super().process_frame(frame, direction)
+
         # Respond to RivaFetchVoicesFrame from the pipeline/UI
         if isinstance(frame, RivaFetchVoicesFrame):
             try:
@@ -222,8 +223,6 @@ class RivaTTSService(TTSService):
                 else:
                     logger.warning(f"Custom prompt path not provided or invalid for: {prompt_id}")
             return
-
-        await super().process_frame(frame, direction)
 
     async def _push_tts_frames(self, text: str):
         """Override base class method to push text frames immediately."""
@@ -648,16 +647,15 @@ class RivaASRService(STTService):
             # Make sure we notify about interruptions quickly out-of-band.
             if isinstance(frame, UserStartedSpeakingFrame):
                 logger.debug("User started speaking")
-                await self._start_interruption()
-                # Push an out-of-band frame (i.e. not using the ordered push
-                # frame task) to stop everything, specially at the output
-                # transport.
-                await self.push_frame(InterruptionFrame())
+                await self.push_frame(frame)
+                await self.push_frame(UserStartedSpeakingFrame(), direction=FrameDirection.UPSTREAM)
+
+                # Make sure we notify about interruptions quickly out-of-band.
+                await self.push_interruption_task_frame_and_wait()
             elif isinstance(frame, UserStoppedSpeakingFrame):
                 logger.debug("User stopped speaking")
-                await self._stop_interruption()
-
-        await self.push_frame(frame)
+                await self.push_frame(frame)
+                await self.push_frame(UserStoppedSpeakingFrame(), direction=FrameDirection.UPSTREAM)
 
     async def _handle_response(self, response):
         """Process ASR response and generate appropriate transcription frames.

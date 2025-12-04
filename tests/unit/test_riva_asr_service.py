@@ -15,7 +15,6 @@ import pytest
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
-    InterruptionFrame,
     StartFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
@@ -395,6 +394,9 @@ class TestRivaASRService(unittest.TestCase):
         service._start_interruption = AsyncMock()
         service._stop_interruption = AsyncMock()
 
+        # Mock the push_interruption_task_frame_and_wait method that's called during interruptions
+        service.push_interruption_task_frame_and_wait = AsyncMock()
+
         # Mock the property to return True - avoids setting the property directly
         type(service).interruptions_allowed = MagicMock(return_value=True)
 
@@ -412,12 +414,10 @@ class TestRivaASRService(unittest.TestCase):
         asyncio.run(run_test())
 
         # Assert
-        service._start_interruption.assert_called_once()
-        service._stop_interruption.assert_called_once()
+        service.push_interruption_task_frame_and_wait.assert_called_once()
 
         # Check that frames were pushed (check by type instead of exact equality)
         pushed_frame_types = [type(call[0][0]) for call in service.push_frame.call_args_list]
-        self.assertIn(InterruptionFrame, pushed_frame_types, "No InterruptionFrame was pushed")
         self.assertIn(UserStartedSpeakingFrame, pushed_frame_types, "No UserStartedSpeakingFrame was pushed")
         self.assertIn(UserStoppedSpeakingFrame, pushed_frame_types, "No UserStoppedSpeakingFrame was pushed")
 

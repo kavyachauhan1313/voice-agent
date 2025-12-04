@@ -69,8 +69,6 @@ class NvidiaRTVIInput(RTVIProcessor):
         if isinstance(frame, EndFrame):
             await self._cleanup()
 
-        await self.push_frame(frame, direction)
-
     async def _cleanup(self):
         """Clean up all state for this connection."""
         # Clean up uploaded audio prompts

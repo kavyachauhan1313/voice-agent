@@ -85,6 +85,8 @@ services:
     
     ports:
       - "8100:8100"
+    volumes:
+      - ./audio_dumps:/app/examples/voice_agent_websocket/audio_dumps
     environment:
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
       - ENABLE_SPECULATIVE_SPEECH=${ENABLE_SPECULATIVE_SPEECH:-false}

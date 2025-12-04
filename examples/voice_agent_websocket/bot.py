@@ -15,20 +15,17 @@ from pipecat.frames.frames import LLMMessagesFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from pipecat.serializers.protobuf import ProtobufFrameSerializer
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 
 from nvidia_pipecat.pipeline.ace_pipeline_runner import ACEPipelineRunner, PipelineMetadata
 from nvidia_pipecat.processors.nvidia_context_aggregator import (
     NvidiaTTSResponseCacher,
     create_nvidia_context_aggregator,
 )
-from nvidia_pipecat.processors.transcript_synchronization import (
-    BotTranscriptSynchronization,
-    UserTranscriptSynchronization,
-)
 from nvidia_pipecat.services.blingfire_text_aggregator import BlingfireTextAggregator
 from nvidia_pipecat.services.nvidia_llm import NvidiaLLMService
 from nvidia_pipecat.services.riva_speech import RivaASRService, RivaTTSService
-from nvidia_pipecat.transports.network.ace_fastapi_websocket import ACETransport, ACETransportParams
 from nvidia_pipecat.transports.services.ace_controller.routers.websocket_router import router as websocket_router
 from nvidia_pipecat.utils.logging import setup_default_ace_logging
 
@@ -46,11 +43,20 @@ async def create_pipeline_task(pipeline_metadata: PipelineMetadata):
     Returns:
         PipelineTask: The configured pipeline task for handling speech-to-speech conversation.
     """
-    transport = ACETransport(
+    # Initialize WebSocket transport with protobuf serialization
+    transport = FastAPIWebsocketTransport(
         websocket=pipeline_metadata.websocket,
-        params=ACETransportParams(
+        params=FastAPIWebsocketParams(
+            audio_in_enabled=True,
+            audio_in_sample_rate=16000,
+            audio_out_enabled=True,
+            audio_out_sample_rate=16000,
+            vad_enabled=True,
             vad_analyzer=SileroVADAnalyzer(),
-            audio_out_10ms_chunks=20,
+            vad_audio_passthrough=True,
+            audio_out_10ms_chunks=10,
+            add_wav_header=True,
+            serializer=ProtobufFrameSerializer(),
         ),
     )
 
@@ -81,10 +87,6 @@ async def create_pipeline_task(pipeline_metadata: PipelineMetadata):
         text_aggregator=BlingfireTextAggregator(),
     )
 
-    # Used to synchronize the user and bot transcripts in the UI
-    stt_transcript_synchronization = UserTranscriptSynchronization()
-    tts_transcript_synchronization = BotTranscriptSynchronization()
-
     # System prompt can be changed to fit the use case
     messages = [
         {
@@ -111,12 +113,10 @@ async def create_pipeline_task(pipeline_metadata: PipelineMetadata):
         [
             transport.input(),  # Websocket input from client
             stt,  # Speech-To-Text
-            stt_transcript_synchronization,
             context_aggregator.user(),
             llm,  # LLM
             tts,  # Text-To-Speech
             *([tts_response_cacher] if tts_response_cacher else []),  # Include cacher only if enabled
-            tts_transcript_synchronization,
             transport.output(),  # Websocket output to client
             context_aggregator.assistant(),
         ]

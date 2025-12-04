@@ -7,6 +7,7 @@ Building production-grade voice agents requires careful consideration of multipl
 
 - **Latency**: Time from user speech end to bot response start (target: 600-1500ms)
 - **Accuracy**: ASR word error rate (WER), factual correctness, LLM generation quality etc.
+- **Scalability**: Concurrent streams supported without audio glitches or performance degradation, all models scale independently
 - **Availability**: System uptime and fault tolerance (target: 99.9%+)
 - **User Satisfaction**: Task completion rate and user feedback scores
 
@@ -52,6 +53,8 @@ For optimizing latency, first we need to measure e2e and component wise latency.
   - Use lower latency audio codecs (Opus at 20ms frames)
   - Minimize audio buffer sizes while maintaining quality
   - Implement jitter buffers for network variations
+- **Scaling Audio Output for Concurrency:**  
+  For scaling to multiple concurrent audio streams (e.g., with FastAPI WebSocket), increase the output audio chunk size up to 400ms to reduce audio glitches and enable smoother playback.
 
 ### 2.2 ASR (Automatic Speech Recognition) Latency
 
@@ -87,6 +90,7 @@ For optimizing latency, first we need to measure e2e and component wise latency.
   - **Streaming TTS**: Start playback before full synthesis
   - **Local Riva TTS**: 150-200ms with TRT optimized Magpie model
   - **Chunked Generation**: Process sentences as they're generated
+  - **Batch Size**: Increasing the Magpie model batch size (e.g., to 64) can significantly boost throughput for high-volume or concurrent workloads.
 
 **Audio Post-processing:**
 - **Contribution**: 50-100ms (normalization, encoding)
