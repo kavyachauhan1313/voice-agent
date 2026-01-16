@@ -13,8 +13,8 @@ TEXTS = [
 TTS_VOICE = "Magpie-Multilingual.EN-US.Aria"
 
 # NVIDIA API Keys
-TTS_API_KEY = "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"
-ASR_API_KEY = "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"
+TTS_API_KEY = "nvapi-"
+ASR_API_KEY = "nvapi-"
 
 # Function IDs
 ASR_FUNCTION_ID = "1598d209-5e27-4d3c-8079-4751568b1081"
