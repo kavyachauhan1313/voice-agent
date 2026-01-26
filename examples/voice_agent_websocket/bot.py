@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: BSD 2-Clause License
+# SPDX-License-Identifier: BSD 2-Clause Licensee
 
 """Speech-to-speech conversation bot."""
 
